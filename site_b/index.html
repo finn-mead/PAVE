@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PAVE Demo - Site B</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .header {
+            background: #fff8f0;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            border-left: 4px solid #ff8c00;
+        }
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+        button {
+            background: #ff8c00;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #e67e00;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .secondary {
+            background: #666;
+        }
+        .secondary:hover {
+            background: #444;
+        }
+        .success-btn {
+            background: #28a745;
+        }
+        .success-btn:hover {
+            background: #218838;
+        }
+        #output {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 6px;
+            padding: 15px;
+            margin: 20px 0;
+            white-space: pre-wrap;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 13px;
+            min-height: 100px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .info {
+            background: #cce7ff;
+            color: #004085;
+            border: 1px solid #b8daff;
+        }
+        .links {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e9ecef;
+        }
+        .links a {
+            color: #ff8c00;
+            text-decoration: none;
+        }
+        .links a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🍊 PAVE Demo - Site B</h1>
+        <p><strong>Origin:</strong> <code>http://localhost:9002</code></p>
+        <p>This demo shows cross-origin verification with the same stored pass. The pass issued on Site A should work here too!</p>
+    </div>
+
+    <div class="actions">
+        <button onclick="getPass()" id="getPassBtn">🎫 Get 18+ Pass</button>
+        <button onclick="verifyPass()" id="verifyBtn">✅ Verify Pass</button>
+        <button onclick="showSummary()" id="summaryBtn" class="secondary">📋 Show Summary</button>
+        <button onclick="clearPass()" id="clearBtn" class="secondary">🗑️ Clear Pass</button>
+        <button onclick="reactivateIssuer()" id="reactivateBtn" class="success-btn">✅ Reactivate Issuer</button>
+    </div>
+
+    <div id="status"></div>
+    
+    <h3>Output Log:</h3>
+    <pre id="output">Ready for commands...</pre>
+
+    <div class="links">
+        <h3>Debug Links:</h3>
+        <ul>
+            <li><a href="http://localhost:8002/viewer?kid=fastage-k1" target="_blank">📊 Guest List Viewer</a></li>
+            <li><a href="http://localhost:9001" target="_blank">🔗 Site A (Cross-Origin Test)</a></li>
+            <li><a href="http://localhost:8001/.well-known/jwks.json" target="_blank">🔑 Issuer JWKS</a></li>
+            <li><a href="http://localhost:8002/log/head" target="_blank">🏷️ Guest List Head</a></li>
+        </ul>
+    </div>
+
+    <script src="sdk.js"></script>
+    <script>
+        function log(message) {
+            const output = document.getElementById('output');
+            const timestamp = new Date().toLocaleTimeString();
+            output.textContent += `[${timestamp}] ${message}\n`;
+            output.scrollTop = output.scrollHeight;
+        }
+
+        function setStatus(message, type = 'info') {
+            const status = document.getElementById('status');
+            status.innerHTML = `<div class="status ${type}">${message}</div>`;
+        }
+
+        function formatJson(obj) {
+            return JSON.stringify(obj, null, 2);
+        }
+
+        async function getPass() {
+            log('🎫 Getting 18+ pass from issuer...');
+            setStatus('Issuing pass...', 'info');
+            
+            try {
+                const jwt = await AgePass.issue();
+                log(`✅ Pass issued successfully!`);
+                log(`JWT Preview: ${jwt.substring(0, 50)}...`);
+                setStatus('✅ Pass issued and stored!', 'success');
+            } catch (error) {
+                log(`❌ Failed to get pass: ${error.message}`);
+                setStatus(`❌ Failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function verifyPass() {
+            log('🔍 Verifying stored pass...');
+            setStatus('Verifying pass...', 'info');
+            
+            try {
+                const result = await AgePass.verify();
+                log(`Verification result:`);
+                log(formatJson(result));
+                
+                if (result.ok) {
+                    setStatus('✅ Pass verification successful!', 'success');
+                    log(`✅ User is verified over 18 via ${result.assurance.method}`);
+                    if (result.head) {
+                        log(`📊 Head digest: ${result.head.digest.substring(0, 16)}...`);
+                    }
+                } else {
+                    setStatus(`❌ Verification failed: ${result.reason}`, 'error');
+                    log(`❌ Reason: ${result.reason}`);
+                }
+            } catch (error) {
+                log(`❌ Verification error: ${error.message}`);
+                setStatus(`❌ Error: ${error.message}`, 'error');
+            }
+        }
+
+        function showSummary() {
+            log('📋 Checking stored pass summary...');
+            
+            const summary = AgePass.getReceiptSummary();
+            if (!summary) {
+                log('ℹ️ No pass stored');
+                setStatus('No pass found in storage', 'info');
+                return;
+            }
+            
+            if (summary.error) {
+                log(`❌ Summary error: ${summary.error}`);
+                setStatus(`❌ Summary error: ${summary.error}`, 'error');
+                return;
+            }
+            
+            log('Pass Summary:');
+            log(formatJson(summary));
+            setStatus('📋 Pass summary displayed', 'info');
+        }
+
+        function clearPass() {
+            log('🗑️ Clearing stored pass...');
+            AgePass.clearReceipt();
+            log('✅ Pass cleared from storage');
+            setStatus('🗑️ Pass cleared', 'info');
+        }
+
+        async function reactivateIssuer() {
+            log('✅ Reactivating issuer (manually editing guest list)...');
+            setStatus('Reactivating issuer...', 'info');
+            
+            try {
+                // Note: This is a demo action - in practice you'd have proper admin endpoints
+                log('⚠️  Manual process: Admin must edit guest_list.json and restart Guest List service');
+                log('   1. Change status from "suspended" to "active"');
+                log('   2. Update updated_at timestamp');
+                log('   3. Restart Guest List service to recompute head');
+                setStatus('✅ Reactivation instructions logged - manual process required', 'info');
+            } catch (error) {
+                log(`❌ Reactivation process info: ${error.message}`);
+                setStatus(`❌ Info error: ${error.message}`, 'error');
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            log('🚀 Site B loaded');
+            const summary = AgePass.getReceiptSummary();
+            if (summary && !summary.error) {
+                log(`ℹ️ Found existing pass: ${summary.preview}`);
+                log('💡 This pass was likely issued from Site A - testing cross-origin!');
+                setStatus('Found existing pass in storage - testing cross-origin functionality!', 'success');
+            } else {
+                setStatus('No pass in storage - click "Get 18+ Pass" or switch to Site A', 'info');
+            }
+        });
+    </script>
+</body>
+</html>

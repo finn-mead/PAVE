@@ -1,0 +1,22 @@
+{
+  "issuers": [
+    {
+      "kid": "fastage-k1",
+      "name": "FastAge Ltd",
+      "jwks_url": "http://localhost:8001/.well-known/jwks.json",
+      "allowed_methods": [
+        "ID+face"
+      ],
+      "software": [
+        "FaceMatch 2.3.1"
+      ],
+      "status": "suspended",
+      "updated_at": "2025-08-15T07:17:17.312376Z"
+    }
+  ],
+  "log_signed_head": {
+    "ts": "2025-08-15T07:17:17.312877Z",
+    "digest": "88f222760f3da70f5b461bf318b041fcbcd3f4cec1d74265a1e8dfa3fedd5a62",
+    "sig": "cc32046e76b64afdb459006f0e4ef125f870b44bc241599cdfdc0d192ba98e3c"
+  }
+}
