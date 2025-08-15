@@ -10,13 +10,13 @@
       "software": [
         "FaceMatch 2.3.1"
       ],
-      "status": "suspended",
-      "updated_at": "2025-08-15T07:17:17.312376Z"
+      "status": "active",
+      "updated_at": "2025-08-15T10:49:00.111817Z"
     }
   ],
   "log_signed_head": {
-    "ts": "2025-08-15T07:17:17.312877Z",
-    "digest": "88f222760f3da70f5b461bf318b041fcbcd3f4cec1d74265a1e8dfa3fedd5a62",
-    "sig": "cc32046e76b64afdb459006f0e4ef125f870b44bc241599cdfdc0d192ba98e3c"
+    "ts": "2025-08-15T10:49:00.112078Z",
+    "digest": "4d0114c0e6ecd81e7e9f0262e750f09b1551f4af9136a4f6d42d585a0059e1c1",
+    "sig": "fba176154d95d4cadd6f58cd8c172e2551d030f886d0adfd7ff762d3da81201f"
   }
 }

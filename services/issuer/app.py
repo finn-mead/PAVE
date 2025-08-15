@@ -163,6 +163,27 @@ async def issue_receipt():
                 detail={"error": "internal_error", "detail": "System time anomaly detected"}
             )
         
+        # Check if issuer is suspended
+        import httpx
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"http://localhost:8002/log/issuers/{KID}")
+                if response.status_code == 200:
+                    issuer_info = response.json()
+                    if issuer_info.get("status") == "suspended":
+                        logger.error(json.dumps({
+                            "event": "issuer.issue.failure",
+                            "kid": KID,
+                            "reason": "issuer_suspended"
+                        }))
+                        raise HTTPException(
+                            status_code=403,
+                            detail={"error": "issuer_suspended", "detail": "This issuer has been suspended"}
+                        )
+        except httpx.RequestError:
+            # If we can't reach guest list, continue (fail-open for availability)
+            pass
+        
         # Build JWT payload
         payload = {
             "iss": ISSUER_URL,
