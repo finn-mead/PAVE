@@ -91,10 +91,20 @@ def compute_head():
 def save_data():
     """Save guest list data to file"""
     try:
-        # Atomic write
+        # Atomic write with Windows compatibility
         temp_file = DATA_FILE.with_suffix('.tmp')
+        
+        # Remove temp file if it exists (Windows issue)
+        if temp_file.exists():
+            temp_file.unlink()
+            
         with open(temp_file, 'w') as f:
             json.dump(state, f, indent=2)
+            
+        # Remove target if exists (Windows atomic rename issue)
+        if DATA_FILE.exists():
+            DATA_FILE.unlink()
+            
         temp_file.rename(DATA_FILE)
     except Exception as e:
         logger.error(json.dumps({

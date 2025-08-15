@@ -55,11 +55,11 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 # Start all services
-start_service "Issuer" "services/issuer" "8001" "python3 app.py"
-start_service "Guest_List" "services/guest_list" "8002" "python3 app.py"
-start_service "Verifier" "services/verifier" "8003" "python3 app.py"
-start_service "Site_A" "site_a" "9001" "python3 -m http.server 9001"
-start_service "Site_B" "site_b" "9002" "python3 -m http.server 9002"
+start_service "Issuer" "services/issuer" "8001" "py app.py"
+start_service "Guest_List" "services/guest_list" "8002" "py app.py"
+start_service "Verifier" "services/verifier" "8003" "py app.py"
+start_service "Site_A" "site_a" "9001" "py -m http.server 9001"
+start_service "Site_B" "site_b" "9002" "py -m http.server 9002"
 
 echo ""
 echo "🎉 All services started successfully!"
