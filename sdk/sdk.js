@@ -3,37 +3,48 @@
  */
 
 const AgePass = {
-    // Storage key for localStorage
+    // Storage key for cookie
     STORAGE_KEY: 'agepass.jwt',
     
     // Default endpoints
     ISSUER_ENDPOINT: 'http://localhost:8001/issue',
     VERIFIER_ENDPOINT: 'http://localhost:8003/verify',
     
-    /**
-     * Store a receipt JWT in localStorage
-     * @param {string} jwt - The receipt JWT to store
-     */
+    setCookie(name, value, options = {}) {
+        let cookieString = `${name}=${encodeURIComponent(value)}`;
+        if (options.secure) cookieString += '; Secure';
+        if (options.sameSite) cookieString += `; SameSite=${options.sameSite}`;
+        if (options.expires) cookieString += `; expires=${options.expires.toUTCString()}`;
+        cookieString += '; path=/';
+        document.cookie = cookieString;
+    },
+    getCookie(name) {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) {
+            return decodeURIComponent(parts.pop().split(';').shift());
+        }
+        return null;
+    },
+    deleteCookie(name) {
+        document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;`;
+    },
+    
     storeReceipt(jwt) {
         if (!jwt || typeof jwt !== 'string') {
             throw new Error('Invalid JWT provided');
         }
-        localStorage.setItem(this.STORAGE_KEY, jwt);
+        const expires = new Date();
+        expires.setTime(expires.getTime() + (24 * 60 * 60 * 1000));
+        this.setCookie(this.STORAGE_KEY, jwt, { secure: true, sameSite: 'None', expires });
     },
     
-    /**
-     * Get stored receipt JWT from localStorage
-     * @returns {string|null} - The stored JWT or null if not found
-     */
     getReceipt() {
-        return localStorage.getItem(this.STORAGE_KEY);
+        return this.getCookie(this.STORAGE_KEY);
     },
     
-    /**
-     * Clear stored receipt from localStorage
-     */
     clearReceipt() {
-        localStorage.removeItem(this.STORAGE_KEY);
+        this.deleteCookie(this.STORAGE_KEY);
     },
     
     /**

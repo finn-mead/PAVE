@@ -219,19 +219,21 @@
         }
 
         async function reactivateIssuer() {
-            log('✅ Reactivating issuer (manually editing guest list)...');
+            log('✅ Reactivating issuer (demo action)...');
             setStatus('Reactivating issuer...', 'info');
-            
             try {
-                // Note: This is a demo action - in practice you'd have proper admin endpoints
-                log('⚠️  Manual process: Admin must edit guest_list.json and restart Guest List service');
-                log('   1. Change status from "suspended" to "active"');
-                log('   2. Update updated_at timestamp');
-                log('   3. Restart Guest List service to recompute head');
-                setStatus('✅ Reactivation instructions logged - manual process required', 'info');
+                const response = await fetch('http://localhost:8002/admin/activate/fastage-k1', { method: 'POST' });
+                if (response.ok) {
+                    const result = await response.json();
+                    log('✅ Issuer reactivated! New head:');
+                    log(formatJson(result.head));
+                    setStatus('✅ Issuer reactivated - verification should now work', 'success');
+                } else {
+                    throw new Error(`HTTP ${response.status}`);
+                }
             } catch (error) {
-                log(`❌ Reactivation process info: ${error.message}`);
-                setStatus(`❌ Info error: ${error.message}`, 'error');
+                log(`❌ Failed to reactivate issuer: ${error.message}`);
+                setStatus(`❌ Reactivation failed: ${error.message}`, 'error');
             }
         }
 

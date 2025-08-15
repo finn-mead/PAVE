@@ -185,6 +185,23 @@ async def suspend_issuer(kid: str):
     
     return SuspendResponse(ok=True, head=state["log_signed_head"])
 
+@app.post("/admin/activate/{kid}", response_model=SuspendResponse)
+async def activate_issuer(kid: str):
+    """Activate an issuer by kid"""
+    issuer = None
+    for i in state["issuers"]:
+        if i["kid"] == kid:
+            issuer = i
+            break
+    if not issuer:
+        raise HTTPException(status_code=404, detail={"error": "unknown_kid", "detail": "unknown kid"})
+    issuer["status"] = "active"
+    issuer["updated_at"] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    compute_head()
+    save_data()
+    logger.info(json.dumps({"event": "guestlist.issuer.activated", "kid": kid, "ts": issuer["updated_at"], "digest": state["log_signed_head"]["digest"]}))
+    return SuspendResponse(ok=True, head=state["log_signed_head"])
+
 @app.get("/viewer", response_class=HTMLResponse)
 async def viewer(kid: str = "fastage-k1"):
     """Viewer page for issuer and head"""
