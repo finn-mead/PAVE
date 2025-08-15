@@ -11,12 +11,12 @@
         "FaceMatch 2.3.1"
       ],
       "status": "suspended",
-      "updated_at": "2025-08-15T07:17:17.312376Z"
+      "updated_at": "2025-08-15T08:48:57.614509Z"
     }
   ],
   "log_signed_head": {
-    "ts": "2025-08-15T07:17:17.312877Z",
-    "digest": "88f222760f3da70f5b461bf318b041fcbcd3f4cec1d74265a1e8dfa3fedd5a62",
-    "sig": "cc32046e76b64afdb459006f0e4ef125f870b44bc241599cdfdc0d192ba98e3c"
+    "ts": "2025-08-15T08:48:57.614595Z",
+    "digest": "d97011e6718dbf5f1ecb8123c385a816a122c170ed6c1345c9ad254c0789779b",
+    "sig": "aee7b0d4e44e96362484ea60a171e2cd969ff48d4023060c4f51cfb83440cddf"
   }
 }

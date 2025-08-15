@@ -3,37 +3,113 @@
  */
 
 const AgePass = {
-    // Storage key for localStorage
+    // Storage key and endpoints
     STORAGE_KEY: 'agepass.jwt',
-    
-    // Default endpoints
     ISSUER_ENDPOINT: 'http://localhost:8001/issue',
     VERIFIER_ENDPOINT: 'http://localhost:8003/verify',
+    SHARED_STORAGE_ENDPOINT: 'http://localhost:8004/storage',
+
+    // Storage mode: 'local' | 'shared' | 'both'
+    // - local: use only localStorage
+    // - shared: use only shared storage service (no localStorage writes)
+    // - both: write to both; read local first then shared
+    storageMode: 'both',
     
     /**
-     * Store a receipt JWT in localStorage
+     * Store a receipt JWT in local or shared storage per mode
      * @param {string} jwt - The receipt JWT to store
      */
-    storeReceipt(jwt) {
+    async storeReceipt(jwt) {
         if (!jwt || typeof jwt !== 'string') {
             throw new Error('Invalid JWT provided');
         }
-        localStorage.setItem(this.STORAGE_KEY, jwt);
+        
+        const mode = this.storageMode;
+        if (mode === 'local') {
+            localStorage.setItem(this.STORAGE_KEY, jwt);
+            return;
+        }
+        
+        if (mode === 'shared' || mode === 'both') {
+            // Optionally store locally as well if in 'both'
+            if (mode === 'both') {
+                try { localStorage.setItem(this.STORAGE_KEY, jwt); } catch (_) {}
+            }
+            try {
+                await fetch(`${this.SHARED_STORAGE_ENDPOINT}/${this.STORAGE_KEY}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    mode: 'cors',
+                    body: JSON.stringify({ value: jwt })
+                });
+            } catch (e) {
+                console.warn('Failed to store in shared storage:', e);
+                if (mode === 'shared') {
+                    throw e;
+                }
+            }
+            return;
+        }
     },
     
     /**
-     * Get stored receipt JWT from localStorage
-     * @returns {string|null} - The stored JWT or null if not found
+     * Get stored receipt per storage mode
+     * @returns {Promise<string|null>} - The stored JWT or null if not found
      */
-    getReceipt() {
-        return localStorage.getItem(this.STORAGE_KEY);
+    async getReceipt() {
+        const mode = this.storageMode;
+        if (mode === 'local') {
+            return localStorage.getItem(this.STORAGE_KEY);
+        }
+        
+        if (mode === 'shared') {
+            try {
+                const response = await fetch(`${this.SHARED_STORAGE_ENDPOINT}/${this.STORAGE_KEY}`, {
+                    method: 'GET',
+                    mode: 'cors'
+                });
+                if (!response.ok) return null;
+                const data = await response.json();
+                return (data.exists && data.value) ? data.value : null;
+            } catch (e) {
+                console.warn('Failed to get from shared storage:', e);
+                return null;
+            }
+        }
+        
+        // both: prefer local, fall back to shared
+        let jwt = null;
+        try { jwt = localStorage.getItem(this.STORAGE_KEY); } catch (_) {}
+        if (jwt) return jwt;
+        
+        try {
+            const response = await fetch(`${this.SHARED_STORAGE_ENDPOINT}/${this.STORAGE_KEY}`, {
+                method: 'GET',
+                mode: 'cors'
+            });
+            if (!response.ok) return null;
+            const data = await response.json();
+            return (data.exists && data.value) ? data.value : null;
+        } catch (e) {
+            console.warn('Failed to get from shared storage:', e);
+            return null;
+        }
     },
     
     /**
-     * Clear stored receipt from localStorage
+     * Clear stored receipt from both storages
      */
-    clearReceipt() {
-        localStorage.removeItem(this.STORAGE_KEY);
+    async clearReceipt() {
+        // Always attempt to clear both, harmless if missing
+        try { localStorage.removeItem(this.STORAGE_KEY); } catch (_) {}
+        try {
+            await fetch(`${this.SHARED_STORAGE_ENDPOINT}/${this.STORAGE_KEY}`, {
+                method: 'DELETE',
+                mode: 'cors'
+            });
+        } catch (e) {
+            console.warn('Failed to clear from shared storage:', e);
+        }
     },
     
     /**
@@ -62,7 +138,7 @@ const AgePass = {
             }
             
             // Store the receipt
-            this.storeReceipt(data.receipt_jwt);
+            await this.storeReceipt(data.receipt_jwt);
             
             return data.receipt_jwt;
             
@@ -80,7 +156,7 @@ const AgePass = {
      */
     async verify(options = {}) {
         const endpoint = options.endpoint || this.VERIFIER_ENDPOINT;
-        const jwt = this.getReceipt();
+        const jwt = await this.getReceipt();
         
         if (!jwt) {
             return {
@@ -123,10 +199,10 @@ const AgePass = {
     
     /**
      * Get a summary of the stored receipt without verifying
-     * @returns {Object|null} - Receipt summary or null if no receipt
+     * @returns {Promise<Object|null>} - Receipt summary or null if no receipt
      */
-    getReceiptSummary() {
-        const jwt = this.getReceipt();
+    async getReceiptSummary() {
+        const jwt = await this.getReceipt();
         if (!jwt) {
             return null;
         }
