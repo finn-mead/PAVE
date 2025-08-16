@@ -5,7 +5,7 @@
       "iss": "http://localhost:8001",
       "name": "FastAge Ltd",
       "jwks_url": "http://localhost:8001/.well-known/jwks.json",
-      "status": "suspended",
+      "status": "active",
       "allowed_methods": [
         "ID+face"
       ],
@@ -21,13 +21,39 @@
           "status": "active"
         }
       ],
-      "updated_at": "2025-08-16T10:08:46.270051Z"
+      "updated_at": "2025-08-16T11:39:34.819254Z"
+    },
+    {
+      "kid": "18+.com",
+      "name": "18+.com",
+      "jwks_uri": "http://localhost:3000/",
+      "status": "active",
+      "updated_at": "2025-08-16T11:39:36.573019Z",
+      "keys": [
+        {
+          "kid": "18+.com",
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "kid": "hello",
+      "name": "hello",
+      "jwks_uri": "https://www.canva.com/design/DAGwOAG0DEY/bRlrn8GLr0kcHvt0Uj3iZw/edit",
+      "status": "active",
+      "updated_at": "2025-08-16T11:39:36.145246Z",
+      "keys": [
+        {
+          "kid": "hello",
+          "status": "active"
+        }
+      ]
     }
   ],
   "log_signed_head": {
-    "ts": "2025-08-16T10:08:46.270142Z",
-    "digest": "1cad6d3aa94250962b28601ec51a2c29d2be6868ee75b1bf4ff9289e33a05c85",
+    "ts": "2025-08-16T11:39:36.573183Z",
+    "digest": "e0a611388e773d665ea8c099ef5f5da79c5caeaab1f8edbd104a54f281387965",
     "key_id": "pave-log-1",
-    "sig": "q8OKiz638s8I0m0A-bUIgPQWiD6EYi10Hf2IXU_cMsFKIvBVOc6Y-eKwk6O4YNW0SwcJL-Ec0YZoKNg6NzjwBg"
+    "sig": "oitae9OTN2woxVCAuH_8UPTms-PVYy2SfA83wGHyBknQDYPskA2qkGghQ-patfp0uiTuu9_s9QzRwlHFhhfoBA"
   }
 }
