@@ -114,7 +114,6 @@
         <button onclick="verifyPass()" id="verifyBtn">✅ Verify Pass</button>
         <button onclick="showSummary()" id="summaryBtn" class="secondary">📋 Show Summary</button>
         <button onclick="clearPass()" id="clearBtn" class="secondary">🗑️ Clear Pass</button>
-        <button onclick="suspendIssuer()" id="suspendBtn" class="warning">⚠️ Suspend Issuer (Demo)</button>
     </div>
 
     <div id="status"></div>
@@ -232,28 +231,6 @@
             }
         }
 
-        async function suspendIssuer() {
-            log('⚠️ Suspending issuer (demo action)...');
-            setStatus('Suspending issuer...', 'info');
-            
-            try {
-                const response = await fetch('http://localhost:8002/admin/suspend/fastage-k1', {
-                    method: 'POST'
-                });
-                
-                if (response.ok) {
-                    const result = await response.json();
-                    log('⚠️ Issuer suspended! New head:');
-                    log(formatJson(result.head));
-                    setStatus('⚠️ Issuer suspended - verification should now fail', 'error');
-                } else {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-            } catch (error) {
-                log(`❌ Failed to suspend issuer: ${error.message}`);
-                setStatus(`❌ Suspend failed: ${error.message}`, 'error');
-            }
-        }
 
         // Initialize
         document.addEventListener('DOMContentLoaded', async function() {

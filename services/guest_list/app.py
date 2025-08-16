@@ -41,6 +41,15 @@ class SuspendResponse(BaseModel):
     ok: bool
     head: Dict[str, str]
 
+class IssuerRequest(BaseModel):
+    kid: str
+    name: str
+    jwks_uri: str
+    status: str = "active"
+
+class IssuerStatusRequest(BaseModel):
+    status: str
+
 def b64url(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
 
@@ -166,7 +175,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:9001", 
         "http://localhost:9002", 
-        "http://localhost:8003"
+        "http://localhost:8003",
+        "http://localhost:3000"  # React dashboard
     ],
     allow_methods=["*"],
     allow_headers=["*"],
@@ -210,6 +220,83 @@ async def get_current_digest():
 @app.get("/log/.well-known/jwks.json")
 async def log_jwks():
     return JSONResponse(json.loads(LOG_PUB_JWK_PATH.read_text()))
+
+# Admin endpoints for dashboard
+@app.get("/admin/issuers")
+async def admin_list_issuers():
+    """Return all issuers for admin dashboard"""
+    return {"issuers": state["issuers"]}
+
+@app.post("/admin/issuers")
+async def admin_add_issuer(issuer_data: IssuerRequest):
+    """Add a new issuer"""
+    # Check if issuer already exists
+    for existing in state["issuers"]:
+        if existing.get("kid") == issuer_data.kid:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "issuer_exists", "detail": "Issuer with this kid already exists"}
+            )
+    
+    # Create new issuer
+    new_issuer = {
+        "kid": issuer_data.kid,
+        "name": issuer_data.name,
+        "jwks_uri": issuer_data.jwks_uri,
+        "status": issuer_data.status,
+        "updated_at": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+        "keys": [{"kid": issuer_data.kid, "status": issuer_data.status}]
+    }
+    
+    state["issuers"].append(new_issuer)
+    compute_head()
+    save_data()
+    
+    logger.info(json.dumps({
+        "event": "guestlist.issuer.added",
+        "kid": issuer_data.kid,
+        "name": issuer_data.name
+    }))
+    
+    return {"ok": True, "issuer": new_issuer}
+
+@app.put("/admin/issuers/{kid}/status")
+async def admin_update_issuer_status(kid: str, status_data: IssuerStatusRequest):
+    """Update issuer status (active/suspended)"""
+    # Find issuer by various identifiers
+    issuer = None
+    for i in state["issuers"]:
+        if (i.get("kid") == kid or 
+            i.get("issuer_id") == kid or 
+            i.get("name") == kid or
+            any(k.get("kid")==kid for k in i.get("keys", []))):
+            issuer = i
+            break
+    
+    if not issuer:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "unknown_kid", "detail": "unknown kid"}
+        )
+    
+    # Update status
+    issuer["status"] = status_data.status
+    issuer["updated_at"] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    
+    # Also update in keys array
+    for key in issuer.get("keys", []):
+        key["status"] = status_data.status
+    
+    compute_head()
+    save_data()
+    
+    logger.info(json.dumps({
+        "event": "guestlist.issuer.status_updated",
+        "kid": kid,
+        "new_status": status_data.status
+    }))
+    
+    return {"ok": True, "issuer": issuer}
 
 @app.post("/admin/suspend/{kid}", response_model=SuspendResponse)
 async def suspend_issuer(kid: str):
