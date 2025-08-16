@@ -22,7 +22,8 @@
       "Bash(kill:*)",
       "Bash(cp:*)",
       "Bash(for:*)",
-      "Bash(do echo \"Stopping $bash_id...\")"
+      "Bash(do echo \"Stopping $bash_id...\")",
+      "Bash(git merge:*)"
     ],
     "deny": [],
     "ask": [],
