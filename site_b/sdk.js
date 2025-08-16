@@ -76,10 +76,12 @@ const AgePass = {
      * Verify the stored receipt with the Verifier
      * @param {Object} options - Verification options
      * @param {string} [options.endpoint] - Custom verifier endpoint
+     * @param {string} [options.policy_id] - Policy ID for verification
      * @returns {Promise<Object>} - Verification result
      */
     async verify(options = {}) {
         const endpoint = options.endpoint || this.VERIFIER_ENDPOINT;
+        const policy_id = options.policy_id || 'uk_adult_high';
         const jwt = this.getReceipt();
         
         if (!jwt) {
@@ -98,7 +100,8 @@ const AgePass = {
                 },
                 mode: 'cors',
                 body: JSON.stringify({
-                    receipt_jwt: jwt
+                    receipt_jwt: jwt,
+                    policy_id: policy_id
                 })
             });
             

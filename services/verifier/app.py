@@ -2,6 +2,7 @@ import json
 import logging
 import time
 import base64
+import hashlib
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional
 
@@ -17,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 # Constants
 GUEST_LIST_BASE = "http://localhost:8002"
-EXPECTED_ISSUER = "http://localhost:8001"
 TIMEOUT = 5.0
 
 # Global HTTP client
@@ -25,6 +25,7 @@ http_client: Optional[httpx.AsyncClient] = None
 
 class VerifyRequest(BaseModel):
     receipt_jwt: str
+    policy_id: Optional[str] = "uk_adult_high"
 
 class VerifyResponse(BaseModel):
     ok: bool
@@ -36,19 +37,21 @@ class ErrorResponse(BaseModel):
     error: str
     detail: str
 
-async def fetch_issuer_entry(kid: str) -> Dict[str, Any]:
-    """Fetch issuer entry from Guest List"""
-    url = f"{GUEST_LIST_BASE}/log/issuers/{kid}"
+async def fetch_issuer_by_iss(iss: str) -> Dict[str, Any]:
+    """Fetch issuer entry by iss from Guest List"""
+    url = f"{GUEST_LIST_BASE}/log/issuers"
     try:
         response = await http_client.get(url)
-        if response.status_code == 404:
-            return None
         response.raise_for_status()
-        return response.json()
+        issuers = response.json()
+        for issuer in issuers:
+            if issuer.get("iss") == iss:
+                return issuer
+        return None
     except httpx.HTTPError as e:
         logger.error(json.dumps({
             "event": "verifier.http.error",
-            "op": "fetch_issuer_entry", 
+            "op": "fetch_issuer_by_iss", 
             "url": url,
             "status": getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None,
             "error": str(e)
@@ -57,6 +60,8 @@ async def fetch_issuer_entry(kid: str) -> Dict[str, Any]:
             "error": "internal_error", 
             "detail": f"Failed to fetch issuer entry: {str(e)}"
         })
+
+# fetch_digest function removed - we compute digest locally from /log/issuers
 
 async def fetch_head() -> Dict[str, str]:
     """Fetch Guest List head for transparency"""
@@ -118,7 +123,7 @@ def parse_jwt_header_payload(token: str) -> tuple[Dict[str, Any], Dict[str, Any]
     except (ValueError, json.JSONDecodeError) as e:
         raise ValueError(f"Failed to parse JWT: {e}")
 
-async def verify_receipt(receipt_jwt: str) -> VerifyResponse:
+async def verify_receipt(receipt_jwt: str, policy_id: str = "uk_adult_high") -> VerifyResponse:
     """Main verification logic"""
     
     # Parse JWT header and payload for routing info
@@ -126,6 +131,9 @@ async def verify_receipt(receipt_jwt: str) -> VerifyResponse:
         header, payload = parse_jwt_header_payload(receipt_jwt)
         kid = header.get('kid')
         iss = payload.get('iss')
+        alg = header.get('alg')
+        typ = header.get('typ')
+        crit = header.get('crit')
     except ValueError as e:
         return VerifyResponse(
             ok=False, 
@@ -133,23 +141,78 @@ async def verify_receipt(receipt_jwt: str) -> VerifyResponse:
             head=await fetch_head()
         )
     
-    logger.info(json.dumps({
-        "event": "verifier.verify.begin",
-        "kid": kid,
-        "iss": iss
-    }))
-    
-    # 1. Get issuer entry from Guest List
-    issuer_entry = await fetch_issuer_entry(kid)
-    if not issuer_entry:
+    # JOSE Header Security Checks
+    # typ is optional, but if present must be "JWT"
+    if typ is not None and typ != "JWT":
         logger.info(json.dumps({
             "event": "verifier.verify.fail",
-            "reason": "unknown_kid",
-            "kid": kid
+            "reason": "typ_not_jwt",
+            "typ": typ
         }))
         return VerifyResponse(
             ok=False,
-            reason="unknown_kid", 
+            reason="typ_not_jwt",
+            head=await fetch_head()
+        )
+    
+    # Reject b64url=false (RFC 7515 section 4.1.5)
+    if header.get('b64') is False:
+        logger.info(json.dumps({
+            "event": "verifier.verify.fail",
+            "reason": "b64_false_not_allowed",
+            "b64": header.get('b64')
+        }))
+        return VerifyResponse(
+            ok=False,
+            reason="b64_false_not_allowed",
+            head=await fetch_head()
+        )
+    
+    # Enforce payload/header kid equality
+    payload_kid = payload.get('kid')
+    if payload_kid is not None and payload_kid != kid:
+        logger.info(json.dumps({
+            "event": "verifier.verify.fail",
+            "reason": "kid_mismatch",
+            "header_kid": kid,
+            "payload_kid": payload_kid
+        }))
+        return VerifyResponse(
+            ok=False,
+            reason="kid_mismatch",
+            head=await fetch_head()
+        )
+    
+    if crit is not None:
+        logger.info(json.dumps({
+            "event": "verifier.verify.fail",
+            "reason": "crit_not_allowed",
+            "crit": crit
+        }))
+        return VerifyResponse(
+            ok=False,
+            reason="crit_not_allowed",
+            head=await fetch_head()
+        )
+    
+    logger.info(json.dumps({
+        "event": "verifier.verify.begin",
+        "kid": kid,
+        "iss": iss,
+        "policy_id": policy_id
+    }))
+    
+    # 1. Get issuer entry from Guest List (by iss)
+    issuer_entry = await fetch_issuer_by_iss(iss)
+    if not issuer_entry:
+        logger.info(json.dumps({
+            "event": "verifier.verify.fail",
+            "reason": "unknown_issuer",
+            "iss": iss
+        }))
+        return VerifyResponse(
+            ok=False,
+            reason="unknown_issuer", 
             head=await fetch_head()
         )
     
@@ -167,22 +230,54 @@ async def verify_receipt(receipt_jwt: str) -> VerifyResponse:
             head=await fetch_head()
         )
     
-    # 3. Validate issuer matches expected
-    if iss != EXPECTED_ISSUER:
+    # 3. Validate algorithm is allowed
+    allowed_algs = issuer_entry.get('allowed_algs', [])
+    if alg not in allowed_algs:
         logger.info(json.dumps({
             "event": "verifier.verify.fail",
-            "reason": "issuer_mismatch",
+            "reason": "alg_not_allowed",
             "kid": kid,
-            "iss": iss,
-            "expected": EXPECTED_ISSUER
+            "alg": alg,
+            "allowed_algs": allowed_algs
         }))
         return VerifyResponse(
             ok=False,
-            reason="issuer_mismatch",
+            reason="alg_not_allowed",
             head=await fetch_head()
         )
     
-    # 4. Fetch JWKS and find matching key
+    # 4. Find matching key in issuer entry and fetch JWKS
+    key_entry = None
+    for k in issuer_entry.get('keys', []):
+        if k.get('kid') == kid:
+            key_entry = k
+            break
+    
+    if not key_entry:
+        logger.info(json.dumps({
+            "event": "verifier.verify.fail", 
+            "reason": "kid_not_in_allowlist",
+            "kid": kid
+        }))
+        return VerifyResponse(
+            ok=False,
+            reason="kid_not_in_allowlist",
+            head=await fetch_head()
+        )
+    
+    if key_entry.get('status') != 'active':
+        logger.info(json.dumps({
+            "event": "verifier.verify.fail", 
+            "reason": "key_not_active",
+            "kid": kid,
+            "key_status": key_entry.get('status')
+        }))
+        return VerifyResponse(
+            ok=False,
+            reason="key_not_active",
+            head=await fetch_head()
+        )
+    
     jwks = await fetch_jwks(issuer_entry['jwks_url'])
     matching_key = None
     for key_data in jwks.get('keys', []):
@@ -209,19 +304,7 @@ async def verify_receipt(receipt_jwt: str) -> VerifyResponse:
         j = jws.JWS()
         j.deserialize(receipt_jwt)
         
-        # Enforce RS256 algorithm
-        if j.jose_header.get("alg") != "RS256":
-            logger.info(json.dumps({
-                "event": "verifier.verify.fail",
-                "reason": "alg_not_allowed", 
-                "kid": kid,
-                "alg": j.jose_header.get("alg")
-            }))
-            return VerifyResponse(
-                ok=False,
-                reason="alg_not_allowed",
-                head=await fetch_head()
-            )
+        # Algorithm validation already done above
         
         j.verify(public_key)
         verified_payload = json.loads(j.payload)
@@ -255,9 +338,10 @@ async def verify_receipt(receipt_jwt: str) -> VerifyResponse:
             head=await fetch_head()
         )
     
-    # Check time bounds
+    # Check time bounds with ±120s clock skew tolerance
     iat = verified_payload.get('iat')
     exp = verified_payload.get('exp')
+    clock_skew = 120  # ±120 seconds
     
     if not isinstance(iat, int) or not isinstance(exp, int):
         logger.info(json.dumps({
@@ -273,13 +357,31 @@ async def verify_receipt(receipt_jwt: str) -> VerifyResponse:
             head=await fetch_head()
         )
     
-    if iat > now:
+    # Cap TTL ≤24h (86400 seconds)
+    ttl = exp - iat
+    if ttl > 86400:
+        logger.info(json.dumps({
+            "event": "verifier.verify.fail",
+            "reason": "ttl_too_long",
+            "kid": kid,
+            "ttl": ttl,
+            "max_ttl": 86400
+        }))
+        return VerifyResponse(
+            ok=False,
+            reason="ttl_too_long",
+            head=await fetch_head()
+        )
+    
+    # Check iat with clock skew
+    if iat > now + clock_skew:
         logger.info(json.dumps({
             "event": "verifier.verify.fail",
             "reason": "token_issued_in_future",
             "kid": kid,
             "iat": iat,
-            "now": now
+            "now": now,
+            "skew": clock_skew
         }))
         return VerifyResponse(
             ok=False,
@@ -287,13 +389,15 @@ async def verify_receipt(receipt_jwt: str) -> VerifyResponse:
             head=await fetch_head()
         )
     
-    if now >= exp:
+    # Check exp with clock skew
+    if now >= exp + clock_skew:
         logger.info(json.dumps({
             "event": "verifier.verify.fail",
             "reason": "token_expired", 
             "kid": kid,
             "exp": exp,
-            "now": now
+            "now": now,
+            "skew": clock_skew
         }))
         return VerifyResponse(
             ok=False,
@@ -317,15 +421,57 @@ async def verify_receipt(receipt_jwt: str) -> VerifyResponse:
             head=await fetch_head()
         )
     
-    # 7. Success! Build assurance response
+    # Check software allowed
+    software = verified_payload.get('software')
+    allowed_software = issuer_entry.get('allowed_software', [])
+    if software not in allowed_software:
+        logger.info(json.dumps({
+            "event": "verifier.verify.fail",
+            "reason": "software_not_allowed",
+            "kid": kid,
+            "software": software,
+            "allowed_software": allowed_software
+        }))
+        return VerifyResponse(
+            ok=False,
+            reason="software_not_allowed",
+            head=await fetch_head()
+        )
+    
+    # 7. Verify digest consistency by recomputing from /log/issuers
     head = await fetch_head()
     
+    # Fetch all issuers and recompute digest
+    all_issuers_response = await http_client.get(f"{GUEST_LIST_BASE}/log/issuers")
+    all_issuers_response.raise_for_status()
+    all_issuers = all_issuers_response.json()
+    
+    # Recompute canonical digest (same as guest list compute_head)
+    canonical = json.dumps(all_issuers, separators=(",", ":"), sort_keys=True)
+    canonical_bytes = canonical.encode('utf-8')
+    computed_digest = hashlib.sha256(canonical_bytes).hexdigest()
+    
+    if head["digest"] != computed_digest:
+        logger.error(json.dumps({
+            "event": "verifier.verify.fail",
+            "reason": "digest_mismatch",
+            "head_digest": head["digest"],
+            "computed_digest": computed_digest
+        }))
+        return VerifyResponse(
+            ok=False,
+            reason="digest_mismatch",
+            head=head
+        )
+    
+    # 8. Success! Build assurance response
     assurance = {
         "issuer_kid": verified_payload.get('kid'),
         "iss": verified_payload.get('iss'),
         "method": verified_payload.get('method'),
         "checks": verified_payload.get('checks', []),
         "policy_tag": verified_payload.get('policy_tag'),
+        "software": verified_payload.get('software'),
         "iat": verified_payload.get('iat'),
         "exp": verified_payload.get('exp')
     }
@@ -376,7 +522,7 @@ app.add_middleware(
 async def verify_endpoint(request: VerifyRequest):
     """Verify a receipt JWT"""
     try:
-        result = await verify_receipt(request.receipt_jwt)
+        result = await verify_receipt(request.receipt_jwt, request.policy_id)
         return result
     except HTTPException:
         raise

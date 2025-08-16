@@ -106,7 +106,7 @@
     <div class="header">
         <h1>🍊 PAVE Demo - Site B</h1>
         <p><strong>Origin:</strong> <code>http://localhost:9002</code></p>
-        <p>This demo shows cross-origin verification with the same stored pass. The pass issued on Site A should work here too!</p>
+        <p>Due to browser security, localStorage is origin-specific, so you need to get a pass directly on Site B to test verification functionality.</p>
     </div>
 
     <div class="actions">
@@ -126,7 +126,7 @@
         <h3>Debug Links:</h3>
         <ul>
             <li><a href="http://localhost:8002/viewer?kid=fastage-k1" target="_blank">📊 Guest List Viewer</a></li>
-            <li><a href="http://localhost:9001" target="_blank">🔗 Site A (Cross-Origin Test)</a></li>
+            <li><a href="http://localhost:9001" target="_blank">🔗 Site A</a></li>
             <li><a href="http://localhost:8001/.well-known/jwks.json" target="_blank">🔑 Issuer JWKS</a></li>
             <li><a href="http://localhost:8002/log/head" target="_blank">🏷️ Guest List Head</a></li>
         </ul>
@@ -219,19 +219,27 @@
         }
 
         async function reactivateIssuer() {
-            log('✅ Reactivating issuer (manually editing guest list)...');
+            log('✅ Reactivating issuer via admin API...');
             setStatus('Reactivating issuer...', 'info');
             
             try {
-                // Note: This is a demo action - in practice you'd have proper admin endpoints
-                log('⚠️  Manual process: Admin must edit guest_list.json and restart Guest List service');
-                log('   1. Change status from "suspended" to "active"');
-                log('   2. Update updated_at timestamp');
-                log('   3. Restart Guest List service to recompute head');
-                setStatus('✅ Reactivation instructions logged - manual process required', 'info');
+                const response = await fetch('http://localhost:8002/admin/activate/fastage-k1', {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    log('✅ Issuer reactivated successfully!');
+                    log(`New head digest: ${result.head.digest.substring(0, 16)}...`);
+                    setStatus('✅ Issuer reactivated - verification should work now!', 'success');
+                } else {
+                    const error = await response.json();
+                    log(`❌ Failed to reactivate: ${error.detail || response.statusText}`);
+                    setStatus(`❌ Failed to reactivate: ${error.detail || response.statusText}`, 'error');
+                }
             } catch (error) {
-                log(`❌ Reactivation process info: ${error.message}`);
-                setStatus(`❌ Info error: ${error.message}`, 'error');
+                log(`❌ Reactivation error: ${error.message}`);
+                setStatus(`❌ Error: ${error.message}`, 'error');
             }
         }
 
@@ -241,10 +249,9 @@
             const summary = AgePass.getReceiptSummary();
             if (summary && !summary.error) {
                 log(`ℹ️ Found existing pass: ${summary.preview}`);
-                log('💡 This pass was likely issued from Site A - testing cross-origin!');
-                setStatus('Found existing pass in storage - testing cross-origin functionality!', 'success');
+                setStatus('Found existing pass in storage', 'success');
             } else {
-                setStatus('No pass in storage - click "Get 18+ Pass" or switch to Site A', 'info');
+                setStatus('No pass in storage - click "Get 18+ Pass" to get started', 'info');
             }
         });
     </script>

@@ -136,11 +136,17 @@ async def get_head():
     """Return the current signed head"""
     return state["log_signed_head"]
 
+@app.get("/log/issuers")
+async def list_issuers():
+    """Return all issuers (array)"""
+    return state["issuers"]
+
 @app.get("/log/issuers/{kid}")
 async def get_issuer(kid: str):
     """Return issuer entry by kid"""
     for issuer in state["issuers"]:
-        if issuer["kid"] == kid:
+        # accept either kid in keys or top-level legacy kid
+        if issuer.get("kid") == kid or any(k.get("kid")==kid for k in issuer.get("keys", [])):
             logger.info(json.dumps({
                 "event": "guestlist.issuer.fetched",
                 "kid": kid
@@ -152,13 +158,21 @@ async def get_issuer(kid: str):
         detail={"error": "unknown_kid", "detail": "unknown kid"}
     )
 
+@app.get("/log/digest")
+async def get_current_digest():
+    """Return recomputed canonical digest of issuers (matches compute_head)"""
+    canonical = json.dumps(state["issuers"], separators=(",", ":"), sort_keys=True).encode("utf-8")
+    digest = hashlib.sha256(canonical).hexdigest()
+    return {"digest": digest}
+
 @app.post("/admin/suspend/{kid}", response_model=SuspendResponse)
 async def suspend_issuer(kid: str):
     """Suspend an issuer by kid"""
     # Find issuer
     issuer = None
     for i in state["issuers"]:
-        if i["kid"] == kid:
+        # accept either kid in keys or top-level legacy kid
+        if i.get("kid") == kid or any(k.get("kid")==kid for k in i.get("keys", [])):
             issuer = i
             break
     
@@ -183,6 +197,24 @@ async def suspend_issuer(kid: str):
         "digest": state["log_signed_head"]["digest"]
     }))
     
+    return SuspendResponse(ok=True, head=state["log_signed_head"])
+
+@app.post("/admin/activate/{kid}", response_model=SuspendResponse)
+async def activate_issuer(kid: str):
+    """Activate an issuer by kid"""
+    issuer = None
+    for i in state["issuers"]:
+        # accept either kid in keys or top-level legacy kid
+        if i.get("kid") == kid or any(k.get("kid")==kid for k in i.get("keys", [])):
+            issuer = i
+            break
+    if not issuer:
+        raise HTTPException(status_code=404, detail={"error":"unknown_kid","detail":"unknown kid"})
+    issuer["status"] = "active"
+    issuer["updated_at"] = datetime.now(timezone.utc).isoformat().replace('+00:00','Z')
+    compute_head()
+    save_data()
+    logger.info(json.dumps({"event":"guestlist.issuer.activated","kid":kid,"ts":issuer["updated_at"],"digest":state["log_signed_head"]["digest"]}))
     return SuspendResponse(ok=True, head=state["log_signed_head"])
 
 @app.get("/viewer", response_class=HTMLResponse)
@@ -216,6 +248,11 @@ async def viewer(kid: str = "fastage-k1"):
             <div id="head">Loading...</div>
         </div>
         
+        <div class="section">
+            <h2>Digest Verification</h2>
+            <div id="digest-check">Loading...</div>
+        </div>
+        
         <script>
             // Fetch issuer data
             fetch('/log/issuers/{kid}')
@@ -227,15 +264,28 @@ async def viewer(kid: str = "fastage-k1"):
                     document.getElementById('issuer').innerHTML = '<pre>Error: ' + error.message + '</pre>';
                 }});
             
-            // Fetch head data
-            fetch('/log/head')
-                .then(response => response.json())
-                .then(data => {{
-                    document.getElementById('head').innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
-                }})
-                .catch(error => {{
-                    document.getElementById('head').innerHTML = '<pre>Error: ' + error.message + '</pre>';
-                }});
+            // Fetch head data and perform digest verification
+            Promise.all([
+                fetch('/log/head').then(r => r.json()),
+                fetch('/log/digest').then(r => r.json())
+            ])
+            .then(([headData, digestData]) => {{
+                document.getElementById('head').innerHTML = '<pre>' + JSON.stringify(headData, null, 2) + '</pre>';
+                
+                const match = headData.digest === digestData.digest;
+                const badge = match ? 
+                    '<span style="background: green; color: white; padding: 2px 6px; border-radius: 3px;">✓ VERIFIED</span>' :
+                    '<span style="background: red; color: white; padding: 2px 6px; border-radius: 3px;">✗ MISMATCH</span>';
+                    
+                document.getElementById('digest-check').innerHTML = 
+                    '<p>Head digest: <code>' + headData.digest + '</code></p>' +
+                    '<p>Recomputed: <code>' + digestData.digest + '</code></p>' +
+                    '<p>Status: ' + badge + '</p>';
+            }})
+            .catch(error => {{
+                document.getElementById('head').innerHTML = '<pre>Error: ' + error.message + '</pre>';
+                document.getElementById('digest-check').innerHTML = '<pre>Error: ' + error.message + '</pre>';
+            }});
         </script>
     </body>
     </html>

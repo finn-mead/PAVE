@@ -171,7 +171,7 @@ async def issue_receipt():
             "over18": True,
             "method": "ID+face",
             "checks": ["id_scan", "selfie_match", "liveness"],
-            "software": "FaceMatch 2.3.1 (model a1b2c3)",
+            "software": "FaceMatch 2.3.1",
             "policy_tag": "uk_adult_high",
             "iat": now,
             "exp": now + 86400  # 24 hours
@@ -179,7 +179,7 @@ async def issue_receipt():
         
         # Create JWT
         token = jwt.JWT(
-            header={"alg": "RS256", "kid": KID},
+            header={"alg": "RS256", "typ": "JWT", "kid": KID},
             claims=payload
         )
         token.make_signed_token(private_key)

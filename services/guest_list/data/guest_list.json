@@ -1,22 +1,32 @@
 {
   "issuers": [
     {
-      "kid": "fastage-k1",
+      "issuer_id": "fastage",
+      "iss": "http://localhost:8001",
       "name": "FastAge Ltd",
       "jwks_url": "http://localhost:8001/.well-known/jwks.json",
+      "status": "active",
       "allowed_methods": [
         "ID+face"
       ],
-      "software": [
+      "allowed_software": [
         "FaceMatch 2.3.1"
       ],
-      "status": "suspended",
-      "updated_at": "2025-08-15T07:17:17.312376Z"
+      "allowed_algs": [
+        "RS256"
+      ],
+      "keys": [
+        {
+          "kid": "fastage-k1",
+          "status": "active"
+        }
+      ],
+      "updated_at": "2025-08-16T07:53:55.483342Z"
     }
   ],
   "log_signed_head": {
-    "ts": "2025-08-15T07:17:17.312877Z",
-    "digest": "88f222760f3da70f5b461bf318b041fcbcd3f4cec1d74265a1e8dfa3fedd5a62",
-    "sig": "cc32046e76b64afdb459006f0e4ef125f870b44bc241599cdfdc0d192ba98e3c"
+    "ts": "2025-08-16T07:53:55.483533Z",
+    "digest": "526f751af1cf640d476058c82921d9f5703a3db5cbdee804f38e13bf6eb268dd",
+    "sig": "3cfdb4ae796e15745d289d02b42559a9940a8d15733748e4902fac360bf1dabd"
   }
 }

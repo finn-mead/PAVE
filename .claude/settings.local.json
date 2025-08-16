@@ -11,7 +11,13 @@
       "Bash(for port in 8001 8002 8003 9001 9002)",
       "Bash(do echo -n \"Port $port: \")",
       "Bash(done)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git push:*)",
+      "Bash(/dev/null)",
+      "Bash(git pull:*)",
+      "Bash(git fetch:*)",
+      "Bash(echo $RECEIPT)",
+      "Bash(lsof:*)"
     ],
     "deny": [],
     "ask": [],
