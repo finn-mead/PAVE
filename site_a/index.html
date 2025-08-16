@@ -132,8 +132,10 @@
         </ul>
     </div>
 
-    <script src="sdk.js"></script>
+    <script src="wallet-client.js"></script>
     <script>
+        let walletClient = null;
+
         function log(message) {
             const output = document.getElementById('output');
             const timestamp = new Date().toLocaleTimeString();
@@ -151,14 +153,15 @@
         }
 
         async function getPass() {
-            log('🎫 Getting 18+ pass from issuer...');
+            log('🎫 Getting 18+ pass from wallet...');
             setStatus('Issuing pass...', 'info');
             
             try {
-                const jwt = await AgePass.issue();
+                const result = await walletClient.issue();
                 log(`✅ Pass issued successfully!`);
-                log(`JWT Preview: ${jwt.substring(0, 50)}...`);
-                setStatus('✅ Pass issued and stored!', 'success');
+                log(`Pass info: ${result.method} from ${result.issuer}`);
+                log(`Valid from ${new Date(result.iat * 1000).toLocaleTimeString()} to ${new Date(result.exp * 1000).toLocaleTimeString()}`);
+                setStatus('✅ Pass issued and stored in wallet!', 'success');
             } catch (error) {
                 log(`❌ Failed to get pass: ${error.message}`);
                 setStatus(`❌ Failed: ${error.message}`, 'error');
@@ -170,7 +173,8 @@
             setStatus('Verifying pass...', 'info');
             
             try {
-                const result = await AgePass.verify();
+                const aud = window.location.origin; // Use current site as audience
+                const result = await walletClient.verify(aud);
                 log(`Verification result:`);
                 log(formatJson(result));
                 
@@ -190,32 +194,42 @@
             }
         }
 
-        function showSummary() {
+        async function showSummary() {
             log('📋 Checking stored pass summary...');
             
-            const summary = AgePass.getReceiptSummary();
-            if (!summary) {
-                log('ℹ️ No pass stored');
-                setStatus('No pass found in storage', 'info');
-                return;
+            try {
+                const summary = await walletClient.summary();
+                if (!summary.has_receipt) {
+                    log('ℹ️ No pass stored in wallet');
+                    setStatus('No pass found in wallet', 'info');
+                    return;
+                }
+                
+                if (summary.error) {
+                    log(`❌ Summary error: ${summary.error}`);
+                    setStatus(`❌ Summary error: ${summary.error}`, 'error');
+                    return;
+                }
+                
+                log('Pass Summary:');
+                log(formatJson(summary));
+                setStatus('📋 Pass summary displayed', 'info');
+            } catch (error) {
+                log(`❌ Summary error: ${error.message}`);
+                setStatus(`❌ Summary error: ${error.message}`, 'error');
             }
-            
-            if (summary.error) {
-                log(`❌ Summary error: ${summary.error}`);
-                setStatus(`❌ Summary error: ${summary.error}`, 'error');
-                return;
-            }
-            
-            log('Pass Summary:');
-            log(formatJson(summary));
-            setStatus('📋 Pass summary displayed', 'info');
         }
 
-        function clearPass() {
+        async function clearPass() {
             log('🗑️ Clearing stored pass...');
-            AgePass.clearReceipt();
-            log('✅ Pass cleared from storage');
-            setStatus('🗑️ Pass cleared', 'info');
+            try {
+                await walletClient.clear();
+                log('✅ Pass cleared from wallet');
+                setStatus('🗑️ Pass cleared', 'info');
+            } catch (error) {
+                log(`❌ Clear error: ${error.message}`);
+                setStatus(`❌ Clear error: ${error.message}`, 'error');
+            }
         }
 
         async function suspendIssuer() {
@@ -242,14 +256,25 @@
         }
 
         // Initialize
-        document.addEventListener('DOMContentLoaded', function() {
+        document.addEventListener('DOMContentLoaded', async function() {
             log('🚀 Site A loaded');
-            const summary = AgePass.getReceiptSummary();
-            if (summary && !summary.error) {
-                log(`ℹ️ Found existing pass: ${summary.preview}`);
-                setStatus('Found existing pass in storage', 'info');
-            } else {
-                setStatus('No pass in storage - click "Get 18+ Pass" to start', 'info');
+            setStatus('Initializing wallet...', 'info');
+            
+            try {
+                walletClient = new PaveWalletClient();
+                await walletClient.init();
+                log('✅ Wallet client initialized');
+                
+                const summary = await walletClient.summary();
+                if (summary.has_receipt && !summary.error) {
+                    log(`ℹ️ Found existing pass in wallet`);
+                    setStatus('Found existing pass in wallet', 'info');
+                } else {
+                    setStatus('No pass in wallet - click "Get 18+ Pass" to start', 'info');
+                }
+            } catch (error) {
+                log(`❌ Wallet initialization failed: ${error.message}`);
+                setStatus(`❌ Wallet initialization failed: ${error.message}`, 'error');
             }
         });
     </script>

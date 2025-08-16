@@ -1,0 +1,10 @@
+{
+  "keys": [
+    {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "kid": "pave-log-1",
+      "x": "dAU50Ufievo1pIkim0Fit8og9G8kl69c5xJ-JtxXMsQ"
+    }
+  ]
+}

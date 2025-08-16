@@ -3,6 +3,7 @@ import logging
 import hashlib
 import hmac
 import os
+import base64
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,8 +11,10 @@ from typing import Dict, Any, List
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from cryptography.hazmat.primitives import serialization
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -20,9 +23,15 @@ logger = logging.getLogger(__name__)
 # Constants
 DATA_FILE = Path(__file__).parent / "data" / "guest_list.json"
 LOG_SIGNING_SECRET = os.getenv("LOG_SIGNING_SECRET", "dev-secret")
+KEYS_DIR = Path(__file__).parent / "keys"
+LOG_KEY_ID = "pave-log-1"
+LOG_PRIV_PATH = KEYS_DIR / "log_private.pem"
+LOG_PUB_JWK_PATH = KEYS_DIR / "log_public_jwk.json"
 
 # Global state
 state: Dict[str, Any] = {}
+LOG_PRIV: Ed25519PrivateKey = None
+LOG_PUB: Ed25519PublicKey = None
 
 class ErrorResponse(BaseModel):
     error: str
@@ -31,6 +40,41 @@ class ErrorResponse(BaseModel):
 class SuspendResponse(BaseModel):
     ok: bool
     head: Dict[str, str]
+
+def b64url(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
+
+def ensure_log_key():
+    global LOG_PRIV, LOG_PUB
+    KEYS_DIR.mkdir(exist_ok=True)
+    if LOG_PRIV_PATH.exists():
+        LOG_PRIV = serialization.load_pem_private_key(LOG_PRIV_PATH.read_bytes(), password=None)
+        LOG_PUB = LOG_PRIV.public_key()
+    else:
+        LOG_PRIV = Ed25519PrivateKey.generate()
+        LOG_PUB = LOG_PRIV.public_key()
+        pem = LOG_PRIV.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption()
+        )
+        LOG_PRIV_PATH.write_bytes(pem)
+        logger.info(json.dumps({
+            "event": "guestlist.logkey.generated",
+            "kid": LOG_KEY_ID
+        }))
+    # Cache JWK public
+    pub_bytes = LOG_PUB.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw
+    )
+    jwk_pub = {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "kid": LOG_KEY_ID,
+        "x": b64url(pub_bytes)
+    }
+    LOG_PUB_JWK_PATH.write_text(json.dumps({"keys":[jwk_pub]}, indent=2))
 
 def load_data():
     """Load guest list data from file"""
@@ -66,25 +110,22 @@ def compute_head():
     
     # Compute digest
     digest = hashlib.sha256(canonical_bytes).hexdigest()
-    
-    # Compute HMAC signature
-    sig = hmac.new(
-        LOG_SIGNING_SECRET.encode('utf-8'),
-        digest.encode('utf-8'),
-        hashlib.sha256
-    ).hexdigest()
-    
-    # Update head
-    now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-    state["log_signed_head"] = {
-        "ts": now,
+
+    # new head payload
+    head_obj = {
+        "ts": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
         "digest": digest,
-        "sig": sig
+        "key_id": LOG_KEY_ID
     }
-    
+    head_bytes = json.dumps(head_obj, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    sig = LOG_PRIV.sign(head_bytes)
+    head_obj["sig"] = b64url(sig)
+
+    state["log_signed_head"] = head_obj
+
     logger.info(json.dumps({
         "event": "guestlist.head.computed",
-        "ts": now,
+        "ts": head_obj["ts"],
         "digest": digest
     }))
 
@@ -110,6 +151,7 @@ async def lifespan(app: FastAPI):
     if LOG_SIGNING_SECRET == "dev-secret":
         logger.warning("Using default LOG_SIGNING_SECRET 'dev-secret' - not for production!")
     
+    ensure_log_key()
     load_data()
     compute_head()
     save_data()
@@ -164,6 +206,10 @@ async def get_current_digest():
     canonical = json.dumps(state["issuers"], separators=(",", ":"), sort_keys=True).encode("utf-8")
     digest = hashlib.sha256(canonical).hexdigest()
     return {"digest": digest}
+
+@app.get("/log/.well-known/jwks.json")
+async def log_jwks():
+    return JSONResponse(json.loads(LOG_PUB_JWK_PATH.read_text()))
 
 @app.post("/admin/suspend/{kid}", response_model=SuspendResponse)
 async def suspend_issuer(kid: str):

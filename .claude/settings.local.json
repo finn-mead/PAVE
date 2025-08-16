@@ -17,7 +17,12 @@
       "Bash(git pull:*)",
       "Bash(git fetch:*)",
       "Bash(echo $RECEIPT)",
-      "Bash(lsof:*)"
+      "Bash(lsof:*)",
+      "Bash(git checkout:*)",
+      "Bash(kill:*)",
+      "Bash(cp:*)",
+      "Bash(for:*)",
+      "Bash(do echo \"Stopping $bash_id...\")"
     ],
     "deny": [],
     "ask": [],

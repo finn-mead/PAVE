@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -34,7 +33,7 @@ app = FastAPI(title="PAVE Issuer Service", lifespan=lifespan)
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:9001", "http://localhost:9002"],
+    allow_origins=["http://localhost:9001", "http://localhost:9002", "http://localhost:8000"],
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=False

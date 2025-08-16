@@ -25,7 +25,7 @@ start_service() {
     cd "$dir"
     $cmd &
     local pid=$!
-    echo "$pid" > "../.${name,,}_pid"
+    echo "$pid" > "../.$(echo $name | tr '[:upper:]' '[:lower:]')_pid"
     cd - > /dev/null
     sleep 1
 }
@@ -35,7 +35,7 @@ cleanup() {
     echo ""
     echo "🛑 Stopping all services..."
     
-    for service in issuer guest_list verifier site_a site_b; do
+    for service in issuer guest_list wallet verifier site_a site_b; do
         pid_file=".${service}_pid"
         if [[ -f "$pid_file" ]]; then
             pid=$(cat "$pid_file")
@@ -57,6 +57,7 @@ trap cleanup SIGINT SIGTERM
 # Start all services
 start_service "Issuer" "services/issuer" "8001" "python3 app.py"
 start_service "Guest_List" "services/guest_list" "8002" "python3 app.py"
+start_service "Wallet" "services/wallet" "8000" "python3 app.py"
 start_service "Verifier" "services/verifier" "8003" "python3 app.py"
 start_service "Site_A" "site_a" "9001" "python3 -m http.server 9001"
 start_service "Site_B" "site_b" "9002" "python3 -m http.server 9002"
@@ -67,6 +68,7 @@ echo ""
 echo "📝 Service URLs:"
 echo "  • Issuer:     http://localhost:8001"
 echo "  • Guest List: http://localhost:8002"  
+echo "  • Wallet:     http://localhost:8000"
 echo "  • Verifier:   http://localhost:8003"
 echo "  • Site A:     http://localhost:9001"
 echo "  • Site B:     http://localhost:9002"

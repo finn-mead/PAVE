@@ -3,25 +3,49 @@ import logging
 import time
 import base64
 import hashlib
+import os
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from jwcrypto import jwk, jws
 from pydantic import BaseModel
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.exceptions import InvalidSignature
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
-# Constants
-GUEST_LIST_BASE = "http://localhost:8002"
+# Constants / config
+GUEST_LIST_BASE = os.getenv("PAVE_GUEST_LIST_BASE", "http://localhost:8002")
 TIMEOUT = 5.0
+
+ALLOWED_WALLET_ORIGIN = os.getenv("PAVE_WALLET_ORIGIN", "http://localhost:8000")
+ALLOWED_AUDIENCES = {
+    a.strip() for a in os.getenv(
+        "PAVE_ALLOWED_AUDIENCES",
+        "http://localhost:9001,http://localhost:9002"
+    ).split(",") if a.strip()
+}
 
 # Global HTTP client
 http_client: Optional[httpx.AsyncClient] = None
+
+# Nonce store for challenge/response
+NONCES = {}  # nonce -> {"exp": int, "used": bool}
+
+def _now() -> int:
+    return int(time.time())
+
+def _gc_nonces():
+    now = _now()
+    for k in list(NONCES.keys()):
+        if NONCES[k]["exp"] <= now:
+            del NONCES[k]
 
 class VerifyRequest(BaseModel):
     receipt_jwt: str
@@ -36,6 +60,18 @@ class VerifyResponse(BaseModel):
 class ErrorResponse(BaseModel):
     error: str
     detail: str
+
+class Envelope(BaseModel):
+    aud: str
+    nonce: str
+    receipt: str
+    # ppid: Optional[str] = None
+    # device_sig: Optional[Dict[str, Any]] = None
+    # receipt_hash: Optional[str] = None
+
+class VerifyEnvelopeRequest(BaseModel):
+    envelope: Envelope
+    policy_id: Optional[str] = "uk_adult_high"
 
 async def fetch_issuer_by_iss(iss: str) -> Dict[str, Any]:
     """Fetch issuer entry by iss from Guest List"""
@@ -111,17 +147,48 @@ def parse_jwt_header_payload(token: str) -> tuple[Dict[str, Any], Dict[str, Any]
         
         # Decode header
         header_b64 = parts[0]
-        header_b64 += '=' * (4 - len(header_b64) % 4)  # Add padding
+        header_b64 += '=' * (-len(header_b64) % 4)  # Add padding
         header = json.loads(base64.urlsafe_b64decode(header_b64))
         
         # Decode payload  
         payload_b64 = parts[1]
-        payload_b64 += '=' * (4 - len(payload_b64) % 4)  # Add padding
+        payload_b64 += '=' * (-len(payload_b64) % 4)  # Add padding
         payload = json.loads(base64.urlsafe_b64decode(payload_b64))
         
         return header, payload
     except (ValueError, json.JSONDecodeError) as e:
         raise ValueError(f"Failed to parse JWT: {e}")
+
+async def fetch_log_jwks():
+    url = f"{GUEST_LIST_BASE}/log/.well-known/jwks.json"
+    r = await http_client.get(url)
+    r.raise_for_status()
+    return r.json()
+
+def b64url_to_bytes(s: str) -> bytes:
+    pad = "=" * ((4 - len(s) % 4) % 4)
+    return base64.urlsafe_b64decode((s + pad).encode("ascii"))
+
+async def verify_log_head_signature(head: Dict[str,str]) -> bool:
+    jwks = await fetch_log_jwks()
+    keys = jwks.get("keys", [])
+    match = None
+    for k in keys:
+        if k.get("kid") == head.get("key_id"):
+            match = k; break
+    if not match: return False
+    x = b64url_to_bytes(match.get("x",""))
+    pub = Ed25519PublicKey.from_public_bytes(x)
+    canonical = json.dumps({
+        "ts": head["ts"],
+        "digest": head["digest"],
+        "key_id": head["key_id"]
+    }, separators=(",",":"), sort_keys=True).encode("utf-8")
+    try:
+        pub.verify(b64url_to_bytes(head["sig"]), canonical)
+        return True
+    except InvalidSignature:
+        return False
 
 async def verify_receipt(receipt_jwt: str, policy_id: str = "uk_adult_high") -> VerifyResponse:
     """Main verification logic"""
@@ -441,6 +508,20 @@ async def verify_receipt(receipt_jwt: str, policy_id: str = "uk_adult_high") -> 
     # 7. Verify digest consistency by recomputing from /log/issuers
     head = await fetch_head()
     
+    # Verify head signature before checking digest
+    if not await verify_log_head_signature(head):
+        logger.error(json.dumps({
+            "event": "verifier.verify.fail",
+            "reason": "head_sig_invalid",
+            "head_digest": head.get("digest"),
+            "head_key_id": head.get("key_id")
+        }))
+        return VerifyResponse(
+            ok=False,
+            reason="head_sig_invalid",
+            head=head
+        )
+    
     # Fetch all issuers and recompute digest
     all_issuers_response = await http_client.get(f"{GUEST_LIST_BASE}/log/issuers")
     all_issuers_response.raise_for_status()
@@ -512,15 +593,43 @@ app = FastAPI(title="PAVE Verifier Service", lifespan=lifespan)
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:9001", "http://localhost:9002"],
+    allow_origins=list(ALLOWED_AUDIENCES | {ALLOWED_WALLET_ORIGIN}),
     allow_methods=["*"],
     allow_headers=["*"], 
     allow_credentials=False
 )
 
+@app.get("/challenge")
+async def challenge_endpoint(request: Request):
+    """Generate a nonce for envelope verification"""
+    _gc_nonces()
+    
+    origin = request.headers.get("origin")
+    if origin != ALLOWED_WALLET_ORIGIN:
+        logger.info(json.dumps({
+            "event": "verifier.challenge.blocked",
+            "reason": "origin_not_allowed",
+            "origin": origin
+        }))
+        raise HTTPException(status_code=403, detail={"error": "origin_not_allowed", "detail": "wallet origin only"})
+    
+    import secrets
+    nonce = secrets.token_urlsafe(32)
+    exp_s = _now() + 60  # 60 seconds per Request 2
+    
+    NONCES[nonce] = {"exp": exp_s, "used": False, "origin": origin}
+    
+    logger.info(json.dumps({
+        "event": "verifier.challenge.issued",
+        "nonce": nonce,
+        "exp": exp_s
+    }))
+    
+    return JSONResponse({"nonce": nonce, "exp_s": exp_s}, headers={"Cache-Control": "no-store"})
+
 @app.post("/verify")
 async def verify_endpoint(request: VerifyRequest):
-    """Verify a receipt JWT"""
+    """Verify a receipt JWT (legacy endpoint)"""
     try:
         result = await verify_receipt(request.receipt_jwt, request.policy_id)
         return result
@@ -534,6 +643,110 @@ async def verify_endpoint(request: VerifyRequest):
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "detail": "Verification failed"}
+        )
+
+@app.post("/verify/envelope")
+async def verify_envelope_endpoint(req: Request, request: VerifyEnvelopeRequest):
+    """Verify an envelope containing receipt + nonce"""
+    try:
+        # Origin check (defense-in-depth)
+        origin = req.headers.get("origin")
+        if origin != ALLOWED_WALLET_ORIGIN:
+            logger.info(json.dumps({
+                "event": "verifier.envelope.blocked",
+                "reason": "origin_not_allowed",
+                "origin": origin
+            }))
+            return VerifyResponse(ok=False, reason="origin_not_allowed", head=await fetch_head())
+        
+        envelope = request.envelope
+        
+        # 1. Check nonce validity
+        _gc_nonces()
+        nonce_info = NONCES.get(envelope.nonce)
+        if not nonce_info:
+            logger.info(json.dumps({
+                "event": "verifier.envelope.fail",
+                "reason": "nonce_unknown",
+                "nonce": envelope.nonce
+            }))
+            return VerifyResponse(
+                ok=False,
+                reason="nonce_unknown",
+                head=await fetch_head()
+            )
+        
+        if nonce_info["used"]:
+            logger.info(json.dumps({
+                "event": "verifier.envelope.fail", 
+                "reason": "nonce_reused",
+                "nonce": envelope.nonce
+            }))
+            return VerifyResponse(
+                ok=False,
+                reason="nonce_reused",
+                head=await fetch_head()
+            )
+        
+        if nonce_info["exp"] <= _now():
+            logger.info(json.dumps({
+                "event": "verifier.envelope.fail",
+                "reason": "nonce_expired", 
+                "nonce": envelope.nonce,
+                "exp": nonce_info["exp"],
+                "now": _now()
+            }))
+            return VerifyResponse(
+                ok=False,
+                reason="nonce_expired",
+                head=await fetch_head()
+            )
+        
+        # 2. Check nonce origin binding
+        if nonce_info.get("origin") != origin:
+            logger.info(json.dumps({
+                "event": "verifier.envelope.fail",
+                "reason": "nonce_origin_mismatch",
+                "expected": nonce_info.get("origin"),
+                "got": origin
+            }))
+            return VerifyResponse(ok=False, reason="nonce_origin_mismatch", head=await fetch_head())
+        
+        # 3. Audience allowlist (MVP)
+        if envelope.aud not in ALLOWED_AUDIENCES:
+            logger.info(json.dumps({
+                "event": "verifier.envelope.fail",
+                "reason": "aud_not_allowed",
+                "aud": envelope.aud
+            }))
+            return VerifyResponse(ok=False, reason="aud_not_allowed", head=await fetch_head())
+        
+        # 4. Mark nonce as used (prevents replay)
+        NONCES[envelope.nonce]["used"] = True
+        
+        # 4. Verify the receipt
+        result = await verify_receipt(envelope.receipt, request.policy_id)
+        
+        logger.info(json.dumps({
+            "event": "verifier.envelope.processed",
+            "nonce": envelope.nonce,
+            "aud": envelope.aud,
+            "ok": result.ok,
+            "reason": result.reason
+        }))
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(json.dumps({
+            "event": "verifier.error",
+            "error": str(e)
+        }))
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "detail": "Envelope verification failed"}
         )
 
 if __name__ == "__main__":

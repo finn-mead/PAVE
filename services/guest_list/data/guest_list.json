@@ -5,7 +5,7 @@
       "iss": "http://localhost:8001",
       "name": "FastAge Ltd",
       "jwks_url": "http://localhost:8001/.well-known/jwks.json",
-      "status": "active",
+      "status": "suspended",
       "allowed_methods": [
         "ID+face"
       ],
@@ -21,12 +21,13 @@
           "status": "active"
         }
       ],
-      "updated_at": "2025-08-16T07:53:55.483342Z"
+      "updated_at": "2025-08-16T10:08:46.270051Z"
     }
   ],
   "log_signed_head": {
-    "ts": "2025-08-16T07:53:55.483533Z",
-    "digest": "526f751af1cf640d476058c82921d9f5703a3db5cbdee804f38e13bf6eb268dd",
-    "sig": "3cfdb4ae796e15745d289d02b42559a9940a8d15733748e4902fac360bf1dabd"
+    "ts": "2025-08-16T10:08:46.270142Z",
+    "digest": "1cad6d3aa94250962b28601ec51a2c29d2be6868ee75b1bf4ff9289e33a05c85",
+    "key_id": "pave-log-1",
+    "sig": "q8OKiz638s8I0m0A-bUIgPQWiD6EYi10Hf2IXU_cMsFKIvBVOc6Y-eKwk6O4YNW0SwcJL-Ec0YZoKNg6NzjwBg"
   }
 }
