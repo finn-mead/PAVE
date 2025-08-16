@@ -111,7 +111,8 @@
 
     <div class="actions">
         <button onclick="getPass()" id="getPassBtn">🎫 Get 18+ Pass</button>
-        <button onclick="verifyPass()" id="verifyBtn">✅ Verify Pass</button>
+        <button onclick="verifyPass()" id="verifyBtn">✅ Verify Pass (Auto)</button>
+        <button onclick="verifyPassRedirect()" id="verifyRedirectBtn" class="secondary">🚀 Verify (Redirect Demo)</button>
         <button onclick="showSummary()" id="summaryBtn" class="secondary">📋 Show Summary</button>
         <button onclick="clearPass()" id="clearBtn" class="secondary">🗑️ Clear Pass</button>
         <button onclick="reactivateIssuer()" id="reactivateBtn" class="success-btn">✅ Reactivate Issuer</button>
@@ -169,12 +170,14 @@
         }
 
         async function verifyPass() {
-            log('🔍 Verifying stored pass...');
+            log('🔍 Verifying stored pass (auto flow)...');
             setStatus('Verifying pass...', 'info');
             
             try {
-                const aud = window.location.origin; // Use current site as audience
-                const result = await walletClient.verify(aud);
+                const result = await walletClient.verifyWithFlow({ 
+                    policy: "uk_adult_high",
+                    flow: "auto" 
+                });
                 log(`Verification result:`);
                 log(formatJson(result));
                 
@@ -190,6 +193,35 @@
                 }
             } catch (error) {
                 log(`❌ Verification error: ${error.message}`);
+                setStatus(`❌ Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function verifyPassRedirect() {
+            log('🚀 Verifying stored pass (redirect demo)...');
+            setStatus('Opening wallet window...', 'info');
+            
+            try {
+                const result = await walletClient.verifyWithFlow({ 
+                    policy: "uk_adult_high",
+                    flow: "redirect",
+                    returnUrl: window.location.href
+                });
+                log(`Redirect verification result:`);
+                log(formatJson(result));
+                
+                if (result.ok) {
+                    setStatus('✅ Redirect verification successful!', 'success');
+                    log(`✅ User is verified over 18 via ${result.assurance.method}`);
+                    if (result.head) {
+                        log(`📊 Head digest: ${result.head.digest.substring(0, 16)}...`);
+                    }
+                } else {
+                    setStatus(`❌ Redirect verification failed: ${result.reason}`, 'error');
+                    log(`❌ Reason: ${result.reason}`);
+                }
+            } catch (error) {
+                log(`❌ Redirect verification error: ${error.message}`);
                 setStatus(`❌ Error: ${error.message}`, 'error');
             }
         }

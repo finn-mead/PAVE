@@ -3,6 +3,8 @@ import json
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import os
 
 ALLOWED_EMBED_ORIGINS = [
     "http://localhost:9001",
@@ -33,6 +35,13 @@ async def add_security_headers(request, call_next):
     resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     resp.headers["Cross-Origin-Resource-Policy"] = "same-origin"
     return resp
+
+@app.get("/verify-ui")
+async def verify_ui():
+    """Serve the top-level verification page"""
+    static_dir = os.path.join(os.path.dirname(__file__), "static")
+    verify_html = os.path.join(static_dir, "verify.html")
+    return FileResponse(verify_html)
 
 app.mount("/", StaticFiles(directory=str((__file__[:__file__.rfind("/")]+"/static").replace("\\","/")), html=True), name="static")
 
