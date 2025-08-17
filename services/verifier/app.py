@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import os
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Constants / config
 GUEST_LIST_BASE = os.getenv("PAVE_GUEST_LIST_BASE", "http://localhost:8002")
+VERIFIER_VERSION = os.getenv("PAVE_VERIFIER_VERSION", "dev")
 TIMEOUT = 5.0
 
 # Events log config
@@ -63,6 +65,7 @@ class VerifyResponse(BaseModel):
     reason: Optional[str] = None
     assurance: Optional[Dict[str, Any]] = None
     head: Optional[Dict[str, str]] = None
+    verify_id: Optional[str] = None  # NEW
 
 class ErrorResponse(BaseModel):
     error: str
@@ -215,7 +218,7 @@ def compute_aud_hash(aud: str) -> str:
         hashlib.sha256
     ).hexdigest()
 
-async def emit_event(result: VerifyResponse, envelope: Optional[Any], payload: Optional[Dict[str, Any]]):
+async def emit_event(result: VerifyResponse, envelope: Optional[Any], payload: Optional[Dict[str, Any]], verify_id: Optional[str] = None, head: Optional[Dict[str, Any]] = None, header: Optional[Dict[str, Any]] = None):
     """Emit verification event to events log (fail-open with single retry)"""
     if not envelope:
         return  # Can't emit without envelope
@@ -230,6 +233,15 @@ async def emit_event(result: VerifyResponse, envelope: Optional[Any], payload: O
     reason = result.reason if not result.ok else None
     issuer_key_kid = payload.get('kid') if payload else None
     
+    # NEW: Extract enrichment fields
+    head_digest = head.get('digest') if head else None
+    head_ts = head.get('ts') if head else None
+    software = payload.get('software') if payload else None
+    alg = header.get('alg') if header else None
+    checks_count = len(payload.get('checks', [])) if payload and payload.get('checks') else None
+    policy_version = None  # Could be extracted from policy system if available
+    verifier_version = VERIFIER_VERSION
+    
     # Build event
     event_data = {
         "schema": "events.v1",
@@ -241,8 +253,16 @@ async def emit_event(result: VerifyResponse, envelope: Optional[Any], payload: O
         "policy_tag": policy_tag,
         "outcome": outcome,
         "reason": reason,
-        "verify_id": None,  # Could add unique verify ID if needed
-        "issuer_key_kid": issuer_key_kid
+        "verify_id": verify_id,
+        "issuer_key_kid": issuer_key_kid,
+        # NEW enrichment fields
+        "head_digest": head_digest,
+        "head_ts": head_ts,
+        "software": software,
+        "alg": alg,
+        "checks_count": checks_count,
+        "policy_version": policy_version,
+        "verifier_version": verifier_version
     }
     
     # Remove None values
@@ -734,6 +754,9 @@ async def verify_endpoint(request: VerifyRequest):
 async def verify_envelope_endpoint(req: Request, request: VerifyEnvelopeRequest):
     """Verify an envelope containing receipt + nonce"""
     try:
+        # Generate verify_id for this request
+        verify_id = str(uuid.uuid4())
+        
         # Origin check (defense-in-depth)
         origin = req.headers.get("origin")
         if origin != ALLOWED_WALLET_ORIGIN:
@@ -742,7 +765,7 @@ async def verify_envelope_endpoint(req: Request, request: VerifyEnvelopeRequest)
                 "reason": "origin_not_allowed",
                 "origin": origin
             }))
-            return VerifyResponse(ok=False, reason="origin_not_allowed", head=await fetch_head())
+            return VerifyResponse(ok=False, reason="origin_not_allowed", head=await fetch_head(), verify_id=verify_id)
         
         envelope = request.envelope
         
@@ -811,16 +834,18 @@ async def verify_envelope_endpoint(req: Request, request: VerifyEnvelopeRequest)
         
         # 4. Verify the receipt
         result = await verify_receipt(envelope.receipt, request.policy_id)
+        result.verify_id = verify_id
         
         # 5. Emit event to transparency log (fail-open)
         try:
-            # Parse payload for event data
+            # Parse payload and header for event data
             payload = None
+            header = None
             try:
-                _, payload = parse_jwt_header_payload(envelope.receipt)
+                header, payload = parse_jwt_header_payload(envelope.receipt)
             except:
-                pass  # Continue without payload if parsing fails
-            await emit_event(result, envelope, payload)
+                pass  # Continue without payload/header if parsing fails
+            await emit_event(result, envelope, payload, verify_id, result.head, header)
         except Exception as e:
             logger.warning(f"Failed to emit event: {e}")
         

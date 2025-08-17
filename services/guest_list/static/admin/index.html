@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline';">
+    <title>PAVE Admin Console</title>
+    <link rel="stylesheet" href="/static/admin/styles.css">
+</head>
+<body>
+    <header class="header">
+        <h1 id="title">PAVE Admin Console</h1>
+        <div class="header-info">
+            <span id="env-badge" class="env-badge">Local Demo</span>
+            <span id="last-updated" class="last-updated">Loading...</span>
+        </div>
+    </header>
+
+    <main class="main">
+        <!-- Head Verification Card -->
+        <section class="card">
+            <h2>Signed Head Verification</h2>
+            <div class="head-info">
+                <div class="digest-row">
+                    <label>Digest:</label>
+                    <code id="head-digest">Loading...</code>
+                    <button id="copy-digest" type="button" aria-label="Copy digest to clipboard">📋</button>
+                </div>
+                <div class="head-metadata">
+                    <span>Timestamp: <span id="head-ts">—</span></span>
+                    <span>Key ID: <span id="head-key">—</span></span>
+                    <span id="head-badge" class="badge">Loading</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Issuers Management Panel -->
+        <section class="card">
+            <h2>Issuers Management</h2>
+            <div class="filters">
+                <label>
+                    Status:
+                    <select id="issuer-status-filter">
+                        <option value="">All</option>
+                        <option value="active">Active</option>
+                        <option value="suspended">Suspended</option>
+                    </select>
+                </label>
+                <label>
+                    Search:
+                    <input id="issuer-search" type="text" placeholder="Search issuer or key ID">
+                </label>
+            </div>
+            <div class="table-container">
+                <table id="issuers-table">
+                    <thead>
+                        <tr>
+                            <th>Issuer</th>
+                            <th>Status</th>
+                            <th>Methods</th>
+                            <th>Software</th>
+                            <th>Algorithms</th>
+                            <th>Keys</th>
+                            <th>Updated</th>
+                            <th>Key ID</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    </tbody>
+                </table>
+                <div id="issuers-empty" class="empty-state" style="display: none;">
+                    No issuers found.
+                </div>
+            </div>
+        </section>
+
+        <!-- Events Log Panel -->
+        <section class="card">
+            <h2>Verification Events</h2>
+            <div class="filters">
+                <label>
+                    Outcome:
+                    <select id="f-outcome">
+                        <option value="">All</option>
+                        <option value="ok">OK</option>
+                        <option value="fail">Fail</option>
+                    </select>
+                </label>
+                <label>
+                    Issuer:
+                    <select id="f-issuer">
+                        <option value="">All</option>
+                    </select>
+                </label>
+                <label>
+                    Policy:
+                    <select id="f-policy">
+                        <option value="">All</option>
+                    </select>
+                </label>
+            </div>
+            <div class="table-container">
+                <table id="events-table">
+                    <thead>
+                        <tr>
+                            <th>Time (UTC)</th>
+                            <th>Issuer</th>
+                            <th>Method</th>
+                            <th>Software</th>
+                            <th>Alg</th>
+                            <th>Checks</th>
+                            <th>Outcome</th>
+                            <th>Policy</th>
+                            <th>Head</th>
+                            <th>Verify ID</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    </tbody>
+                </table>
+                <div id="events-empty" class="empty-state" style="display: none;">
+                    No events yet. Run a verification to populate.
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Toast notifications -->
+    <div id="toast" aria-live="polite" class="toast-container"></div>
+
+    <script src="/static/admin/app.js" defer></script>
+</body>
+</html>
