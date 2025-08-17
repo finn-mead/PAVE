@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FastAge - Age Verification Request</title>
+    <link rel="icon" href="data:,">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            max-width: 500px;
+            width: 100%;
+            padding: 40px;
+            text-align: center;
+        }
+        
+        .logo {
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 50%;
+            margin: 0 auto 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            color: white;
+            font-weight: bold;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 24px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+            line-height: 1.4;
+            max-width: 400px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        
+        .request-info {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+            text-align: left;
+        }
+        
+        .request-info h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+        
+        .request-detail {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .request-detail:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+        }
+        
+        .request-detail strong {
+            color: #333;
+        }
+        
+        .request-detail span {
+            color: #666;
+        }
+        
+        .warning {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 30px;
+            color: #856404;
+            font-size: 14px;
+        }
+        
+        .upload-section {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .upload-section h4 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        
+        .upload-disclaimer {
+            color: #666;
+            font-size: 12px;
+            margin-bottom: 15px;
+        }
+        
+        .upload-area {
+            border: 2px dashed #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 15px;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        
+        .upload-area:hover {
+            border-color: #667eea;
+        }
+        
+        .upload-area.has-image {
+            border-color: #28a745;
+            background: #f8fff9;
+        }
+        
+        .upload-input {
+            display: none;
+        }
+        
+        .image-preview {
+            max-width: 200px;
+            max-height: 200px;
+            border-radius: 8px;
+            margin: 10px auto;
+            display: block;
+        }
+        
+        .remove-btn {
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 5px 10px;
+            font-size: 12px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            margin-top: 20px;
+        }
+        
+        .btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            min-width: 120px;
+            text-decoration: none;
+            display: inline-block;
+        }
+        
+        .btn-approve {
+            background: #28a745;
+            color: white;
+        }
+        
+        .btn-approve:hover {
+            background: #218838;
+            transform: translateY(-1px);
+        }
+        
+        .btn-reject {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .btn-reject:hover {
+            background: #c82333;
+            transform: translateY(-1px);
+        }
+        
+        .footer {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            color: #999;
+            font-size: 11px;
+        }
+        
+        .powered-by {
+            margin-top: 10px;
+            color: #bbb;
+            font-size: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">FA</div>
+        <h1>FastAge Ltd</h1>
+        <p class="subtitle">FastAge is about to attest you're 18+. No name, no DOB. This is a demo—no photos are uploaded.</p>
+        
+        <div class="request-info">
+            <h3>Verification Request</h3>
+            <div class="request-detail">
+                <strong>Requesting Site:</strong>
+                <span title="{aud}">{site_name}</span>
+            </div>
+            <div class="request-detail">
+                <strong>Audience:</strong>
+                <span>{aud}</span>
+            </div>
+            <div class="request-detail">
+                <strong>Verification Type:</strong>
+                <span>18+ Age Verification</span>
+            </div>
+            <div class="request-detail">
+                <strong>Method:</strong>
+                <span>ID + Face Match</span>
+            </div>
+        </div>
+        
+        <div class="upload-section">
+            <h4>📷 Identity Verification (Demo)</h4>
+            <div class="upload-disclaimer">Demo preview only. Nothing leaves your device.</div>
+            <div class="upload-area" id="upload-area">
+                <div id="upload-prompt">Click to select ID photo for verification</div>
+                <img id="image-preview" class="image-preview" style="display: none;">
+                <button id="remove-btn" class="remove-btn" style="display: none;">Remove</button>
+            </div>
+            <input type="file" id="photo-input" class="upload-input" accept="image/*">
+        </div>
+        
+        <div class="warning">
+            ⚠️ This is a mock issuer for development purposes. In production, this would involve actual identity verification processes.
+        </div>
+        
+        <div class="button-group">
+            <a href="/ui/approve?return_to={return_url}&state={state}&aud={aud}&policy_id={policy_id}" class="btn btn-approve">
+                ✅ Approve
+            </a>
+            <a href="/ui/reject?return_to={return_url}&state={state}&aud={aud}&policy_id={policy_id}" class="btn btn-reject">
+                ❌ Reject
+            </a>
+        </div>
+        
+        <div class="footer">
+            FastAge Mock Issuer v1.0 | Development Mode
+            <div class="powered-by">Powered by PAVE</div>
+        </div>
+    </div>
+    <script src="/static/approve.js?v=202508170518" defer></script>
+</body>
+</html>

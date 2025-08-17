@@ -1,6 +1,6 @@
 # services/wallet/app.py
 import json
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -33,7 +33,13 @@ async def add_security_headers(request, call_next):
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "no-referrer"
     resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    resp.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    
+    # Allow cross-origin for SDK, strict for everything else
+    if request.url.path.startswith("/sdk/"):
+        resp.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+    else:
+        resp.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    
     return resp
 
 @app.get("/verify-ui")
@@ -43,7 +49,26 @@ async def verify_ui():
     verify_html = os.path.join(static_dir, "verify.html")
     return FileResponse(verify_html)
 
-app.mount("/", StaticFiles(directory=str((__file__[:__file__.rfind("/")]+"/static").replace("\\","/")), html=True), name="static")
+@app.get("/iframe.html")
+async def serve_iframe():
+    """Back-compat path: SDK expects /iframe.html at root"""
+    static_dir = os.path.join(os.path.dirname(__file__), "static")
+    return FileResponse(os.path.join(static_dir, "iframe.html"))
+
+@app.get("/sdk/wallet-client.js")
+async def serve_shared_sdk():
+    """Serve the shared SDK for sites to include"""
+    sdk_path = os.path.join(os.path.dirname(__file__), "../../sdk/wallet-client.js")
+    if not os.path.exists(sdk_path):
+        raise HTTPException(status_code=404, detail="SDK file not found")
+    return FileResponse(
+        sdk_path,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-store"}
+    )
+
+# Mount static files at /static to avoid route conflicts
+app.mount("/static", StaticFiles(directory=str((__file__[:__file__.rfind("/")]+"/static").replace("\\","/")), html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn

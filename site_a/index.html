@@ -133,7 +133,7 @@
         </ul>
     </div>
 
-    <script src="wallet-client.js"></script>
+    <script src="http://localhost:8000/sdk/wallet-client.js?v=dev-20250817"></script>
     <script>
         let walletClient = null;
 
@@ -154,18 +154,24 @@
         }
 
         async function getPass() {
-            log('🎫 Getting 18+ pass from wallet...');
-            setStatus('Issuing pass...', 'info');
-            
+            log('🎫 Getting 18+ pass (redirect-safe)…');
+            setStatus('Opening wallet…', 'info');
             try {
-                const result = await walletClient.issue();
-                log(`✅ Pass issued successfully!`);
-                log(`Pass info: ${result.method} from ${result.issuer}`);
-                log(`Valid from ${new Date(result.iat * 1000).toLocaleTimeString()} to ${new Date(result.exp * 1000).toLocaleTimeString()}`);
-                setStatus('✅ Pass issued and stored in wallet!', 'success');
+                // Redirect flow works for "first-time issue" and returns a verify result
+                const result = await walletClient.verifyWithFlow({
+                    policy: "uk_adult_high",
+                    flow: "redirect",
+                    returnUrl: window.location.href
+                });
+                log('Result:'); log(formatJson(result));
+                if (result.ok) {
+                    setStatus('✅ Pass issued & verified!', 'success');
+                } else {
+                    setStatus(`❌ Failed: ${result.reason}`, 'error');
+                }
             } catch (error) {
-                log(`❌ Failed to get pass: ${error.message}`);
-                setStatus(`❌ Failed: ${error.message}`, 'error');
+                log(`❌ Redirect issue error: ${error.message}`);
+                setStatus(`❌ Error: ${error.message}`, 'error');
             }
         }
 
@@ -295,7 +301,19 @@
             try {
                 walletClient = new PaveWalletClient();
                 await walletClient.init();
-                log('✅ Wallet client initialized');
+                log('Wallet client initialized');
+
+                // If we just returned from a redirect flow, pick up the result now
+                const resumed = walletClient.consumeRedirectResult();
+                if (resumed) {
+                    log('Resumed redirect result:');
+                    log(formatJson(resumed.result));
+                    if (resumed.result.ok) {
+                        setStatus('Pass issued & verified!', 'success');
+                    } else {
+                        setStatus(`Failed: ${resumed.result.reason}`, 'error');
+                    }
+                }
                 
                 const summary = await walletClient.summary();
                 if (summary.has_receipt && !summary.error) {

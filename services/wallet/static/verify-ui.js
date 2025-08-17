@@ -1,393 +1,321 @@
-// services/wallet/static/verify-ui.js
-(() => {
-  const ALLOWLIST = new Set(["http://localhost:9001", "http://localhost:9002"]);
-  const ISSUER_ID = "fastage";
-  const VERIFIER_CHALLENGE = "http://localhost:8003/challenge";
-  const VERIFIER_VERIFY = "http://localhost:8003/verify/envelope";
+// ===== config =====
+const ISSUER_UI = "http://localhost:8001/ui";  // issuer supports both /ui and /approve with return_to/return_url
+const VERIFIER  = "http://localhost:8003";
+
+// ===== small helpers =====
+const qs = new URLSearchParams(location.search);
+const $  = (id) => document.getElementById(id);
+
+function b64urlEncode(str) {
+  // base64url without padding
+  const b64 = btoa(unescape(encodeURIComponent(str)));
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function safeJson(obj) {
+  try { return JSON.stringify(obj); } catch (_) { return "{}"; }
+}
+
+function setStatus(text) { $("status").textContent = text; }
+function showError(text) { const el = $("error"); el.style.display="block"; el.textContent = text; $("spinner").style.display="none"; }
+function showResult(obj) {
+  const el = $("result");
+  el.style.display = "block";
+  el.textContent = JSON.stringify(obj, null, 2);
+  $("spinner").style.display = "none";
+}
+
+// ===== IndexedDB minimal wrapper =====
+const DB_NAME = "pave_wallet";
+const DB_VERSION = 1;
+const STORE = "receipts";
+const FASTAGE_KEY = "native:fastage";
+const ISSUER_ID = "fastage"; // must match wallet.js
+// compat store (used by iframe wallet.js)
+const COMPAT_DB_NAME = "pave";
+const COMPAT_STORE   = "receipts";
+const RETURN_URL_KEY = "pave:return_url";
+const PARAMS_KEY = "pave:params";
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (ev) => {
+      const db = ev.target.result;
+      if (!db.objectStoreNames.contains(STORE)) {
+        db.createObjectStore(STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  });
+}
+
+function openCompatDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(COMPAT_DB_NAME, 1);
+    req.onupgradeneeded = (ev) => {
+      const db = ev.target.result;
+      if (!db.objectStoreNames.contains(COMPAT_STORE)) {
+        db.createObjectStore(COMPAT_STORE, { keyPath: "issuer_id" });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  });
+}
+
+async function idbGet(key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readonly");
+    const st = tx.objectStore(STORE);
+    const rq = st.get(key);
+    rq.onsuccess = () => resolve(rq.result || null);
+    rq.onerror   = () => reject(rq.error);
+  });
+}
+
+async function idbPut(key, val) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    const st = tx.objectStore(STORE);
+    const rq = st.put(val, key);
+    rq.onsuccess = () => resolve(true);
+    rq.onerror   = () => reject(rq.error);
+  });
+}
+
+async function compatGetReceipt() {
+  const db = await openCompatDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(COMPAT_STORE, "readonly");
+    const st = tx.objectStore(COMPAT_STORE);
+    const rq = st.get(ISSUER_ID);
+    rq.onsuccess = () => resolve(rq.result || null);
+    rq.onerror   = () => reject(rq.error);
+  });
+}
+
+async function compatPutReceipt(jwt) {
+  const db = await openCompatDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(COMPAT_STORE, "readwrite");
+    const st = tx.objectStore(COMPAT_STORE);
+    const rq = st.put({ issuer_id: ISSUER_ID, receipt_jwt: jwt });
+    rq.onsuccess = () => resolve(true);
+    rq.onerror   = () => reject(rq.error);
+  });
+}
+
+// ===== verifier calls =====
+async function fetchChallenge() {
+  const res = await fetch(`${VERIFIER}/challenge`, {
+    method: "GET",
+    mode: "cors",
+    credentials: "omit"
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`HTTP ${res.status} ${res.statusText} @ ${VERIFIER}/challenge ${txt}`);
+  }
+  return res.json();
+}
+
+async function verifyWithVerifier(aud, policy_id, jwt) {
+  setStatus("Requesting challenge…");
+  const { nonce } = await fetchChallenge();
+
+  setStatus("Submitting verification envelope…");
+  // Correct nested structure for verifier
+  const payload = { 
+    envelope: { aud, nonce, receipt: jwt },
+    policy_id 
+  };
   
-  // DOM elements
-  const statusEl = document.getElementById('status');
-  const spinnerEl = document.getElementById('spinner');
-  const resultEl = document.getElementById('result');
-  const errorEl = document.getElementById('error');
-
-  function log(message) {
-    console.log(`[wallet.verify_ui] ${message}`);
-  }
-
-  function setStatus(message, hideSpinner = false) {
-    statusEl.textContent = message;
-    if (hideSpinner) {
-      spinnerEl.style.display = 'none';
-    }
-  }
-
-  function showError(message, showBackLink = true) {
-    spinnerEl.style.display = 'none';
-    errorEl.style.display = 'block';
-    errorEl.innerHTML = `
-      <div class="error">
-        ${message}
-        ${showBackLink ? `<br><a href="#" onclick="history.back()" class="back-link">← Back to site</a>` : ''}
-      </div>
-    `;
-  }
-
-  function showResult(result, aud) {
-    spinnerEl.style.display = 'none';
-    resultEl.style.display = 'block';
-    
-    if (result.ok) {
-      resultEl.innerHTML = `
-        <div class="success">✅ Verification Complete</div>
-        <div style="font-size: 14px; color: #666; margin-top: 8px;">
-          Age verified successfully
-        </div>
-      `;
-    } else {
-      resultEl.innerHTML = `
-        <div class="error">❌ Verification Failed</div>
-        <div style="font-size: 14px; color: #666; margin-top: 8px;">
-          ${result.reason || 'Unknown error'}
-        </div>
-      `;
-    }
-    
-    setTimeout(() => {
-      setStatus('Returning to site...', true);
-    }, 1500);
-  }
-
-  // IndexedDB helpers (same as wallet.js)
-  const DB_NAME = "pave";
-  const STORE = "receipts";
+  const res = await fetch(`${VERIFIER}/verify/envelope`, {
+    method: "POST",
+    mode: "cors",
+    credentials: "omit",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
   
-  function openDB() {
-    return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 1);
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(STORE)) {
-          db.createObjectStore(STORE, { keyPath: "issuer_id" });
-        }
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`HTTP ${res.status} ${res.statusText} @ ${VERIFIER}/verify/envelope ${txt}`);
   }
+  
+  return res.json();
+}
 
-  async function getReceipt(issuer_id) {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, "readonly");
-      const req = tx.objectStore(STORE).get(issuer_id);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(req.error);
-    });
-  }
-
-  function returnResult(result, aud, state, return_url) {
-    const payload = { state, result };
-    
-    // Option A: postMessage to opener (preferred)
-    if (window.opener && aud) {
-      try {
-        log(`return.postmessage to ${aud}`);
-        window.opener.postMessage({
-          type: "pave.verify.result",
-          state,
-          result
-        }, aud);
+// ===== return result to caller (popup or full redirect) =====
+function returnToCaller(aud, return_url, state, result) {
+  // Allowlist check for aud before using as targetOrigin (security)
+  const ALLOWED_ORIGINS = new Set(["http://localhost:9001", "http://localhost:9002"]);
+  
+  // Try popup first
+  try {
+    if (window.opener && !window.opener.closed) {
+      if (ALLOWED_ORIGINS.has(aud)) {
+        const targetOrigin = new URL(aud).origin;  // precise targetOrigin for security
+        window.opener.postMessage({ type: "pave.verify.result", state, result }, targetOrigin);
+        // Small UX nicety: close the popup; if blocked, we still posted the result.
         window.close();
         return;
-      } catch (error) {
-        log(`postMessage failed: ${error.message}`);
-      }
-    }
-    
-    // Option B: URL fragment fallback
-    log(`return.location to ${return_url}`);
-    const fragment = btoa(JSON.stringify(payload))
-      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-    window.location.href = `${return_url}#pave_result=${fragment}`;
-  }
-
-  // --- Mode handlers ---
-  async function handleIssueMode(aud, policy_id, return_url, state, siteName) {
-    setStatus(`Getting 18+ pass for ${siteName}...`);
-    
-    // Issue a new receipt
-    const issueResp = await fetch("http://localhost:8001/issue", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" }
-    });
-    
-    if (!issueResp.ok) {
-      showError(`Failed to get pass: HTTP ${issueResp.status}`);
-      return;
-    }
-    
-    const issueData = await issueResp.json();
-    const jwt = issueData.receipt_jwt;
-    if (!jwt) {
-      showError('No receipt received from issuer');
-      return;
-    }
-    
-    // Store the receipt
-    await new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 1);
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(STORE)) {
-          db.createObjectStore(STORE, { keyPath: "issuer_id" });
-        }
-      };
-      req.onsuccess = () => {
-        const db = req.result;
-        const tx = db.transaction(STORE, "readwrite");
-        tx.objectStore(STORE).put({ issuer_id: ISSUER_ID, receipt_jwt: jwt });
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      };
-      req.onerror = () => reject(req.error);
-    });
-    
-    // Return success result
-    const payload = parseJwtPayload(jwt) || {};
-    const result = {
-      ok: true,
-      issuer: payload.iss,
-      method: payload.method,
-      over18: !!payload.over18,
-      iat: payload.iat,
-      exp: payload.exp
-    };
-    
-    showResult({ ok: true, reason: 'Pass issued successfully' }, aud);
-    setTimeout(() => {
-      returnResult(result, aud, state, return_url);
-    }, 2000);
-  }
-
-  async function handleVerifyMode(aud, policy_id, return_url, state, siteName) {
-    setStatus(`Verifying your 18+ pass for ${siteName}...`);
-
-    // Check for stored receipt
-    log(`verifyui.checking_receipt for issuer_id: ${ISSUER_ID}`);
-    const rec = await getReceipt(ISSUER_ID);
-    log(`verifyui.receipt_result: ${rec ? 'found' : 'not_found'}`);
-    if (!rec) {
-      log('verifyui.no_receipt');
-      // Return failure result instead of showing error page
-      const result = { ok: false, reason: "no_receipt" };
-      setStatus('No pass found - returning to site...', true);
-      
-      setTimeout(() => {
-        returnResult(result, aud, state, return_url);
-      }, 1500);
-      return;
-    }
-
-    await performVerification(rec, aud, policy_id, state, return_url);
-  }
-
-  async function handleAutoMode(aud, policy_id, return_url, state, siteName) {
-    // Auto mode: try verify first, if no receipt then issue
-    setStatus(`Checking for 18+ pass for ${siteName}...`);
-    
-    const rec = await getReceipt(ISSUER_ID);
-    if (rec) {
-      // Have receipt, proceed with verification
-      await performVerification(rec, aud, policy_id, state, return_url);
-    } else {
-      // No receipt, issue one first then verify
-      log('verifyui.auto_mode.no_receipt_issuing');
-      await handleIssueMode(aud, policy_id, return_url, state, siteName);
-    }
-  }
-
-  async function handleClearMode(aud, policy_id, return_url, state, siteName) {
-    setStatus(`Clearing stored pass for ${siteName}...`);
-    
-    // Clear the receipt from first-party storage
-    const req = indexedDB.open(DB_NAME, 1);
-    await new Promise((resolve, reject) => {
-      req.onsuccess = () => {
-        const db = req.result;
-        const tx = db.transaction(STORE, "readwrite");
-        tx.objectStore(STORE).delete(ISSUER_ID);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      };
-      req.onerror = () => reject(req.error);
-    });
-    
-    // Show clear-specific success message
-    spinnerEl.style.display = 'none';
-    resultEl.style.display = 'block';
-    resultEl.innerHTML = `
-      <div class="success">🗑️ Pass Cleared</div>
-      <div style="font-size: 14px; color: #666; margin-top: 8px;">
-        Your 18+ pass has been removed from wallet storage
-      </div>
-    `;
-    
-    setTimeout(() => {
-      setStatus('Returning to site...', true);
-    }, 1500);
-    
-    // Return success result
-    const result = { ok: true };
-    setTimeout(() => {
-      returnResult(result, aud, state, return_url);
-    }, 2000);
-  }
-
-  function parseJwtPayload(jwt) {
-    const parts = jwt.split(".");
-    if (parts.length !== 3) return null;
-    try {
-      const pad = "=".repeat((4 - (parts[1].length % 4)) % 4);
-      const json = atob((parts[1] + pad).replace(/-/g, "+").replace(/_/g, "/"));
-      return JSON.parse(json);
-    } catch { 
-      return null; 
-    }
-  }
-
-  async function performVerification(rec, aud, policy_id, state, return_url) {
-    // Fetch challenge nonce
-    setStatus('Getting verification challenge...');
-    const chResp = await fetch(VERIFIER_CHALLENGE, { 
-      method: "GET",
-      headers: { "Origin": window.location.origin }
-    });
-    
-    if (!chResp.ok) {
-      log(`verifyui.challenge.fail {status: ${chResp.status}}`);
-      showError(`Challenge failed: HTTP ${chResp.status}`);
-      return;
-    }
-
-    const { nonce, exp_s } = await chResp.json();
-    if (!nonce) {
-      showError('No nonce received from challenge');
-      return;
-    }
-
-    log('verifyui.challenge.ok');
-
-    // Build envelope and verify
-    setStatus('Verifying with PAVE network...');
-    const envelope = {
-      aud,
-      nonce,
-      receipt: rec.receipt_jwt
-    };
-
-    const verifyResp = await fetch(VERIFIER_VERIFY, {
-      method: "POST",
-      headers: { 
-        "Content-Type": "application/json",
-        "Origin": window.location.origin
-      },
-      body: JSON.stringify({ envelope, policy_id })
-    });
-
-    if (!verifyResp.ok) {
-      const errorText = await verifyResp.text().catch(() => '');
-      log(`verifyui.verify.fail {status: ${verifyResp.status}}`);
-      showError(`Verification failed: HTTP ${verifyResp.status} ${errorText}`);
-      return;
-    }
-
-    const result = await verifyResp.json();
-    log(`verifyui.verify.ok {reason: ${result.reason || 'success'}}`);
-
-    // Show result briefly
-    showResult(result, aud);
-    
-    // Return result after brief delay
-    setTimeout(() => {
-      returnResult(result, aud, state, return_url);
-    }, 2000);
-  }
-
-  async function main() {
-    try {
-      // Parse and validate URL parameters
-      const params = new URLSearchParams(window.location.search);
-      const aud = params.get('aud');
-      const policy_id = params.get('policy_id') || 'uk_adult_high';
-      const return_url = params.get('return_url');
-      const state = params.get('state');
-      const mode = params.get('mode') || 'verify'; // verify|issue|auto
-      const force = params.get('force') === '1';
-
-      log(`verifyui.init {aud: ${aud}, policy_id: ${policy_id}, mode: ${mode}, forced: ${force}}`);
-
-      // Validate required parameters
-      if (!aud || !return_url || !state) {
-        showError('Missing required parameters: aud, return_url, state');
-        return;
-      }
-
-      // Validate aud is allowlisted
-      if (!ALLOWLIST.has(aud)) {
-        showError(`Audience '${aud}' not allowlisted`);
-        return;
-      }
-
-      // Validate return_url origin matches aud
-      let returnUrlObj;
-      try {
-        returnUrlObj = new URL(return_url);
-      } catch (error) {
-        showError('Invalid return_url format');
-        return;
-      }
-
-      if (returnUrlObj.origin !== aud) {
-        showError(`return_url origin '${returnUrlObj.origin}' does not match aud '${aud}'`);
-        return;
-      }
-
-      // Validate scheme (HTTPS required except localhost)
-      if (returnUrlObj.protocol !== 'https:' && !returnUrlObj.hostname.includes('localhost')) {
-        showError('return_url must use HTTPS (except localhost)');
-        return;
-      }
-
-      // Update status to show which site we're verifying for
-      const siteName = aud.includes('9001') ? 'Site A' : 
-                      aud.includes('9002') ? 'Site B' : 
-                      new URL(aud).hostname;
-      
-      // Handle different modes
-      if (mode === 'issue') {
-        await handleIssueMode(aud, policy_id, return_url, state, siteName);
-        return;
-      } else if (mode === 'verify') {
-        await handleVerifyMode(aud, policy_id, return_url, state, siteName);
-        return;
-      } else if (mode === 'auto') {
-        await handleAutoMode(aud, policy_id, return_url, state, siteName);
-        return;
-      } else if (mode === 'clear') {
-        await handleClearMode(aud, policy_id, return_url, state, siteName);
-        return;
       } else {
-        showError(`Invalid mode '${mode}'. Expected: verify, issue, auto, or clear`);
-        return;
+        // Malicious aud - fall through to fragment only
+        console.warn("[verify-ui] aud not allowlisted, using fragment fallback only:", aud);
+      }
+    }
+  } catch (_) {
+    // cross-origin edge, fall through to fragment path
+  }
+  // Full-redirect fragment fallback
+  const payload = b64urlEncode(JSON.stringify({ state, result }));
+  const hash = `#pave_result=${payload}`;
+  if (return_url && typeof return_url === "string") {
+    const base = return_url.split('#')[0];
+    location.href = base + hash;
+  } else {
+    // As a last resort, stick it on our own URL so SDK on the opener can read it (rare path)
+    location.hash = hash;
+  }
+}
+
+// ===== main flow =====
+(async function main() {
+  try {
+    $("error").style.display = "none";
+    $("result").style.display = "none";
+    $("spinner").style.display = "block";
+
+    // ---- parse inputs & coalesce from session ----
+    const issuer_result = qs.get("issuer_result"); // "ok" | "fail" | null
+
+    // First, read whatever we have on the URL
+    let aud       = qs.get("aud") || "";
+    let policy_id = (qs.get("policy_id") || "").trim();
+    let state     = qs.get("state") || "";
+    let return_url = qs.get("return_url") || "";
+
+    // Then, pull persisted values (from pre-issuer hop)
+    const persisted = JSON.parse(sessionStorage.getItem(PARAMS_KEY) || "{}");
+    if (!aud)       aud       = persisted.aud       || "";
+    if (!policy_id) policy_id = persisted.policy_id || "uk_adult_high";
+    if (!state)     state     = persisted.state     || "";
+    if (!return_url) return_url = persisted.return_url || "";
+    
+    // Normalize: drop any existing fragment to avoid '#%23pave_result=' loops
+    if (return_url) return_url = return_url.split('#')[0];
+
+    const mode = (qs.get("mode") || "auto").toLowerCase();
+
+    // Require params only on the **pre-issuer** hop.
+    // On callback (issuer_result present), we allow recovery from session.
+    if (!issuer_result && (!aud || !policy_id || !return_url || !state)) {
+      const err = { ok: false, reason: "wallet_param_error" };
+      showError("Missing required parameters.");
+      return returnToCaller(aud || "*", return_url || "", state || "", err);
+    }
+
+    // If we came back from issuer, handle immediately
+    if (issuer_result === "ok") {
+      setStatus("Storing issuer receipt…");
+      const jwt = qs.get("jwt");
+      const returnedState = qs.get("state");
+      
+      // State integrity check - CSRF/flow protection
+      const original = JSON.parse(sessionStorage.getItem(PARAMS_KEY) || "{}");
+      const originalState = original.state || state; // fallback
+      if (returnedState !== originalState) {
+        const err = { ok: false, reason: "state_mismatch" };
+        showError("State mismatch - possible CSRF attack.");
+        history.replaceState(null, '', location.origin + '/verify-ui');
+        return returnToCaller(aud, return_url, originalState, err);
+      }
+      
+      if (!jwt) {
+        const err = { ok: false, reason: "malformed_issuer_callback" };
+        showError("Issuer returned ok but no jwt was provided.");
+        history.replaceState(null, '', location.origin + '/verify-ui');
+        return returnToCaller(aud, return_url, state, err);
+      }
+      
+      // Strip sensitive query params from URL ASAP
+      history.replaceState(null, '', location.origin + '/verify-ui');
+      
+      try {
+        // write to both (legacy key & iframe-compatible store)\n        await idbPut(FASTAGE_KEY, jwt);\n        await compatPutReceipt(jwt);
+      } catch (storageError) {
+        const err = { ok: false, reason: "storage_error", message: storageError.message };
+        showError(`Storage failed: ${storageError.message}`);
+        return returnToCaller(aud, return_url, state, err);
       }
 
-    } catch (error) {
-      log(`verifyui.error: ${error.message}`);
-      showError(`Unexpected error: ${error.message}`);
+      const result = await verifyWithVerifier(aud, policy_id, jwt);
+      showResult(result);
+      sessionStorage.removeItem(PARAMS_KEY);
+      sessionStorage.removeItem(RETURN_URL_KEY);
+      return returnToCaller(aud, return_url, state, result);
     }
-  }
+    if (issuer_result === "fail") {
+      const reason = qs.get("reason") || "issuer_reject";
+      const returnedState = qs.get("state");
+      
+      // State integrity check for fail path too
+      const original = JSON.parse(sessionStorage.getItem(PARAMS_KEY) || "{}");
+      const originalState = original.state || state; // fallback
+      if (returnedState !== originalState) {
+        const err = { ok: false, reason: "state_mismatch" };
+        showError("State mismatch - possible CSRF attack.");
+        history.replaceState(null, '', location.origin + '/verify-ui');
+        return returnToCaller(aud, return_url, originalState, err);
+      }
+      
+      // Strip params in fail path for consistency
+      history.replaceState(null, '', location.origin + '/verify-ui');
+      
+      const result = { ok: false, reason };
+      showError(`Issuer rejected: ${reason}`);
+      sessionStorage.removeItem(PARAMS_KEY);
+      sessionStorage.removeItem(RETURN_URL_KEY);
+      return returnToCaller(aud, return_url, state, result);
+    }
 
-  // Start verification flow when page loads
-  document.addEventListener('DOMContentLoaded', main);
+    // No issuer_result → decide: verify existing vs go to issuer
+    setStatus("Checking for an existing pass…");
+    // Prefer iframe-compatible record; fall back to legacy key if present\n    const compatRec = await compatGetReceipt();\n    const legacyJwt = await idbGet(FASTAGE_KEY);\n    const existingJwt = compatRec?.receipt_jwt || legacyJwt;
+    const forceIssue  = mode === "issue";
+
+    if (!existingJwt || forceIssue) {
+      setStatus("No pass found (or 'issue' mode). Redirecting to issuer…");
+      // Persist full param bundle across the issuer bounce
+      sessionStorage.setItem(PARAMS_KEY, JSON.stringify({ return_url, aud, policy_id, state }));
+      const params = new URLSearchParams({
+        return_to: location.origin + "/verify-ui",  // issuer accepts both return_to and return_url
+        aud, policy_id, state
+      });
+      // 302 via JS: the Issuer UI will read return_to and bounce back here
+      location.href = `${ISSUER_UI}?${params.toString()}`;
+      return;
+    }
+
+    // We have a pass; try immediate verification
+    setStatus("Found existing pass. Verifying…");
+    const result = await verifyWithVerifier(aud, policy_id, existingJwt);
+    showResult(result);
+    return returnToCaller(aud, return_url, state, result);
+
+  } catch (e) {
+    console.error("[verify-ui] fatal error", e);
+    const aud        = qs.get("aud") || "*";
+    const return_url = qs.get("return_url") || "";
+    const state      = qs.get("state") || "";
+    const result     = { ok: false, reason: "wallet_exception", message: String(e && e.message || e) };
+    showError(`Error: ${result.message}`);
+    sessionStorage.removeItem(RETURN_URL_KEY);
+    return returnToCaller(aud, return_url, state, result);
+  }
 })();
