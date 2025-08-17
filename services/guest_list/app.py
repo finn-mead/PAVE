@@ -4,15 +4,18 @@ import hashlib
 import hmac
 import os
 import base64
+import asyncio
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, Field, field_validator, model_validator
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives import serialization
 
@@ -22,7 +25,10 @@ logger = logging.getLogger(__name__)
 
 # Constants
 DATA_FILE = Path(__file__).parent / "data" / "guest_list.json"
+EVENTS_FILE = Path(__file__).parent / "data" / "events.jsonl"
 LOG_SIGNING_SECRET = os.getenv("LOG_SIGNING_SECRET", "dev-secret")
+EVENTS_HMAC_SECRET = os.getenv("EVENTS_HMAC_SECRET", "dev-events-secret")
+EVENTS_INGEST_TOKEN = os.getenv("EVENTS_INGEST_TOKEN")
 KEYS_DIR = Path(__file__).parent / "keys"
 LOG_KEY_ID = "pave-log-1"
 LOG_PRIV_PATH = KEYS_DIR / "log_private.pem"
@@ -32,6 +38,7 @@ LOG_PUB_JWK_PATH = KEYS_DIR / "log_public_jwk.json"
 state: Dict[str, Any] = {}
 LOG_PRIV: Ed25519PrivateKey = None
 LOG_PUB: Ed25519PublicKey = None
+events_lock = asyncio.Lock()
 
 class ErrorResponse(BaseModel):
     error: str
@@ -40,6 +47,41 @@ class ErrorResponse(BaseModel):
 class SuspendResponse(BaseModel):
     ok: bool
     head: Dict[str, str]
+
+# Events models
+CANONICAL_REASONS = {
+    "issuer_suspended", "expired", "method_not_allowed", "issuer_not_allowed", 
+    "bad_signature", "jwt_malformed", "clock_skew", "policy_mismatch", "internal_error"
+}
+
+class EventV1(BaseModel):
+    schema: str = Field(default="events.v1", pattern=r"^events\.v1$")
+    ts: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+    aud_hash: str = Field(..., pattern=r"^[0-9a-f]{64}$")
+    issuer: str = Field(..., min_length=1)
+    attested_issuer: Optional[str] = None
+    method: str = Field(..., min_length=1)
+    policy_tag: str = Field(..., min_length=1)
+    outcome: str = Field(..., pattern=r"^(ok|fail)$")
+    reason: Optional[str] = None
+    verify_id: Optional[str] = None
+    issuer_key_kid: Optional[str] = None
+    
+    @model_validator(mode='after')
+    def validate_reason_with_outcome(self):
+        if self.outcome == 'fail' and self.reason and self.reason not in CANONICAL_REASONS:
+            raise ValueError(f'reason must be one of: {", ".join(sorted(CANONICAL_REASONS))}')
+        elif self.outcome == 'ok' and self.reason is not None:
+            raise ValueError('reason must be null when outcome is "ok"')
+        return self
+
+class EventsResponse(BaseModel):
+    schema: str = "events.v1"
+    items: List[EventV1]
+    next: Optional[str] = None
+
+class IngestResponse(BaseModel):
+    ok: bool
 
 def b64url(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
@@ -145,11 +187,81 @@ def save_data():
         }))
         raise
 
+async def append_event(event: EventV1):
+    """Atomically append event to events.jsonl"""
+    async with events_lock:
+        try:
+            # Ensure data directory exists
+            EVENTS_FILE.parent.mkdir(exist_ok=True)
+            
+            # Append event as single line
+            with open(EVENTS_FILE, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(event.model_dump(), separators=(',', ':')) + '\n')
+            
+        except Exception as e:
+            logger.error(json.dumps({
+                "event": "events.error",
+                "op": "append_event", 
+                "error": str(e)
+            }))
+            raise HTTPException(status_code=503, detail={"error": "append_failed", "detail": str(e)})
+
+def read_events(limit: int = 100, since: Optional[str] = None, 
+                issuer: Optional[str] = None, attested_issuer: Optional[str] = None,
+                policy_tag: Optional[str] = None, outcome: Optional[str] = None) -> List[EventV1]:
+    """Read and filter events from events.jsonl"""
+    events = []
+    
+    if not EVENTS_FILE.exists():
+        return events
+    
+    try:
+        with open(EVENTS_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event_data = json.loads(line)
+                    event = EventV1(**event_data)
+                    
+                    # Apply filters
+                    if since and event.ts < since:
+                        continue
+                    if issuer and event.issuer != issuer:
+                        continue
+                    if attested_issuer and event.attested_issuer != attested_issuer:
+                        continue
+                    if policy_tag and event.policy_tag != policy_tag:
+                        continue
+                    if outcome and event.outcome != outcome:
+                        continue
+                    
+                    events.append(event)
+                except Exception as e:
+                    # Skip malformed lines
+                    logger.warning(f"Skipping malformed event line: {e}")
+                    continue
+        
+        # Sort by timestamp descending and apply limit
+        events.sort(key=lambda e: e.ts, reverse=True)
+        return events[:limit]
+        
+    except Exception as e:
+        logger.error(json.dumps({
+            "event": "events.error",
+            "op": "read_events",
+            "error": str(e)
+        }))
+        return []
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     if LOG_SIGNING_SECRET == "dev-secret":
         logger.warning("Using default LOG_SIGNING_SECRET 'dev-secret' - not for production!")
+    if EVENTS_HMAC_SECRET == "dev-events-secret":
+        logger.warning("Using default EVENTS_HMAC_SECRET 'dev-events-secret' - not for production!")
     
     ensure_log_key()
     load_data()
@@ -160,18 +272,89 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="PAVE Guest List Service", lifespan=lifespan)
 
+# Custom exception handler to return 400 for POST body validation errors
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    # Return 400 for POST requests (body validation), 422 for GET requests (query params)
+    status_code = 400 if request.method == "POST" else 422
+    return JSONResponse(
+        status_code=status_code,
+        content={"detail": exc.errors()}
+    )
+
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:9001", 
-        "http://localhost:9002", 
-        "http://localhost:8003"
+        "http://localhost:9002"
     ],
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=False
 )
+
+# Events endpoints
+@app.post("/log/events", response_model=IngestResponse)
+async def ingest_event(event: EventV1, x_events_auth: Optional[str] = Header(None)):
+    """Ingest a verification event"""
+    # Optional auth check
+    if EVENTS_INGEST_TOKEN and x_events_auth != EVENTS_INGEST_TOKEN:
+        raise HTTPException(status_code=401, detail={"error": "unauthorized", "detail": "invalid or missing X-Events-Auth"})
+    
+    try:
+        await append_event(event)
+        return IngestResponse(ok=True)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(json.dumps({
+            "event": "events.error",
+            "op": "ingest_event",
+            "error": str(e)
+        }))
+        raise HTTPException(status_code=503, detail={"error": "append_failed", "detail": str(e)})
+
+@app.get("/log/events", response_model=EventsResponse)
+async def get_events(
+    limit: int = Query(100, ge=1, le=1000),
+    since: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"),
+    issuer: Optional[str] = Query(None),
+    attested_issuer: Optional[str] = Query(None), 
+    policy_tag: Optional[str] = Query(None),
+    outcome: Optional[str] = Query(None, pattern=r"^(ok|fail)$")
+):
+    """Get filtered events in descending timestamp order"""
+    try:
+        # Clamp limit to max 1000
+        limit = min(limit, 1000)
+        
+        events = read_events(
+            limit=limit,
+            since=since,
+            issuer=issuer,
+            attested_issuer=attested_issuer,
+            policy_tag=policy_tag,
+            outcome=outcome
+        )
+        
+        response = EventsResponse(items=events)
+        
+        # Set cache headers
+        headers = {
+            "Cache-Control": "no-store",
+            "Content-Type": "application/json"
+        }
+        
+        return JSONResponse(content=response.model_dump(), headers=headers)
+        
+    except Exception as e:
+        logger.error(json.dumps({
+            "event": "events.error", 
+            "op": "get_events",
+            "error": str(e)
+        }))
+        raise HTTPException(status_code=422, detail={"error": "query_error", "detail": str(e)})
 
 @app.get("/log/head")
 async def get_head():
@@ -262,6 +445,212 @@ async def activate_issuer(kid: str):
     save_data()
     logger.info(json.dumps({"event":"guestlist.issuer.activated","kid":kid,"ts":issuer["updated_at"],"digest":state["log_signed_head"]["digest"]}))
     return SuspendResponse(ok=True, head=state["log_signed_head"])
+
+@app.get("/viewer/events", response_class=HTMLResponse)
+async def events_viewer():
+    """Basic HTML viewer for events log"""
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>PAVE Events Log Viewer</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 20px; }
+            .header { background: #f0f8ff; padding: 16px; border-radius: 8px; margin-bottom: 20px; }
+            .filters { margin: 20px 0; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+            .filters select, .filters input { padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #eee; }
+            th { background: #f8f9fa; font-weight: 600; }
+            .outcome-ok { color: #22c55e; }
+            .outcome-fail { color: #ef4444; }
+            .empty-state { text-align: center; padding: 40px; color: #666; }
+            .error { background: #fee2e2; color: #dc2626; padding: 12px; border-radius: 4px; margin: 20px 0; }
+            .short-hash { font-family: monospace; }
+            .auto-refresh { margin-left: auto; font-size: 14px; color: #666; }
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>PAVE Events Log Viewer</h1>
+            <p>Real-time verification events from the PAVE network</p>
+        </div>
+        
+        <div class="filters">
+            <label>Outcome: 
+                <select id="outcome-filter">
+                    <option value="">All</option>
+                    <option value="ok">OK</option>
+                    <option value="fail">Fail</option>
+                </select>
+            </label>
+            <label>Issuer: 
+                <select id="issuer-filter">
+                    <option value="">All</option>
+                </select>
+            </label>
+            <label>Policy: 
+                <select id="policy-filter">
+                    <option value="">All</option>
+                </select>
+            </label>
+            <span class="auto-refresh">Auto-refresh: 10s</span>
+        </div>
+        
+        <div id="error-container"></div>
+        
+        <table id="events-table">
+            <thead>
+                <tr>
+                    <th>Time (UTC)</th>
+                    <th>Site</th>
+                    <th>Issuer</th>
+                    <th>Method</th>
+                    <th>Policy</th>
+                    <th>Outcome</th>
+                    <th>Reason</th>
+                </tr>
+            </thead>
+            <tbody id="events-body">
+            </tbody>
+        </table>
+        
+        <div id="empty-state" class="empty-state" style="display: none;">
+            No events yet. Run a verification to populate.
+        </div>
+        
+        <script>
+            let currentFilters = { outcome: '', issuer: '', policy: '' };
+            let allEvents = [];
+            
+            function showError(message) {
+                const container = document.getElementById('error-container');
+                container.innerHTML = '<div class="error">' + message + ' (retrying in 5s...)</div>';
+                setTimeout(() => container.innerHTML = '', 5000);
+            }
+            
+            function updateFilters(events) {
+                const issuers = new Set();
+                const policies = new Set();
+                
+                events.forEach(event => {
+                    const issuerName = event.attested_issuer || new URL(event.issuer).hostname;
+                    const filterValue = event.attested_issuer || event.issuer; // Use full URL when no attested_issuer
+                    issuers.add(JSON.stringify({name: issuerName, value: filterValue}));
+                    policies.add(event.policy_tag);
+                });
+                
+                const issuerSelect = document.getElementById('issuer-filter');
+                const policySelect = document.getElementById('policy-filter');
+                
+                // Preserve current selection
+                const currentIssuer = issuerSelect.value;
+                const currentPolicy = policySelect.value;
+                
+                issuerSelect.innerHTML = '<option value="">All</option>';
+                Array.from(issuers).map(JSON.parse).sort((a, b) => a.name.localeCompare(b.name)).forEach(issuer => {
+                    const option = document.createElement('option');
+                    option.value = issuer.value;
+                    option.textContent = issuer.name;
+                    if (issuer.value === currentIssuer) option.selected = true;
+                    issuerSelect.appendChild(option);
+                });
+                
+                policySelect.innerHTML = '<option value="">All</option>';
+                Array.from(policies).sort().forEach(policy => {
+                    const option = document.createElement('option');
+                    option.value = policy;
+                    option.textContent = policy;
+                    if (policy === currentPolicy) option.selected = true;
+                    policySelect.appendChild(option);
+                });
+            }
+            
+            function renderEvents(events) {
+                const tbody = document.getElementById('events-body');
+                const emptyState = document.getElementById('empty-state');
+                
+                if (events.length === 0) {
+                    tbody.innerHTML = '';
+                    emptyState.style.display = 'block';
+                    return;
+                }
+                
+                emptyState.style.display = 'none';
+                
+                tbody.innerHTML = events.map(event => {
+                    const issuerName = event.attested_issuer || new URL(event.issuer).hostname;
+                    const shortHash = event.aud_hash.substring(0, 8);
+                    const outcomeClass = event.outcome === 'ok' ? 'outcome-ok' : 'outcome-fail';
+                    const outcomeIcon = event.outcome === 'ok' ? '✓' : '✗';
+                    
+                    return `
+                        <tr>
+                            <td>${new Date(event.ts).toLocaleString('en-US', {timeZone: 'UTC'})} UTC</td>
+                            <td><span class="short-hash" title="${event.aud_hash}">${shortHash}</span></td>
+                            <td>${issuerName}${event.attested_issuer ? ' <small>(adapter)</small>' : ''}</td>
+                            <td>${event.method}</td>
+                            <td>${event.policy_tag}</td>
+                            <td class="${outcomeClass}">${outcomeIcon} ${event.outcome.toUpperCase()}</td>
+                            <td>${event.reason || ''}</td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+            
+            async function fetchEvents() {
+                try {
+                    const params = new URLSearchParams();
+                    params.set('limit', '200');
+                    if (currentFilters.outcome) params.set('outcome', currentFilters.outcome);
+                    if (currentFilters.issuer) {
+                        // If filter value looks like a URL, use issuer param; otherwise use attested_issuer
+                        if (currentFilters.issuer.startsWith('http://') || currentFilters.issuer.startsWith('https://')) {
+                            params.set('issuer', currentFilters.issuer);
+                        } else {
+                            params.set('attested_issuer', currentFilters.issuer);
+                        }
+                    }
+                    if (currentFilters.policy) params.set('policy_tag', currentFilters.policy);
+                    
+                    const response = await fetch('/log/events?' + params.toString());
+                    if (!response.ok) throw new Error('HTTP ' + response.status);
+                    
+                    const data = await response.json();
+                    allEvents = data.items;
+                    updateFilters(allEvents);
+                    renderEvents(allEvents);
+                    
+                } catch (error) {
+                    showError('Couldn\\'t load events: ' + error.message);
+                    setTimeout(fetchEvents, 5000);
+                }
+            }
+            
+            // Set up filter handlers
+            document.getElementById('outcome-filter').addEventListener('change', (e) => {
+                currentFilters.outcome = e.target.value;
+                fetchEvents();
+            });
+            
+            document.getElementById('issuer-filter').addEventListener('change', (e) => {
+                currentFilters.issuer = e.target.value;
+                fetchEvents();
+            });
+            
+            document.getElementById('policy-filter').addEventListener('change', (e) => {
+                currentFilters.policy = e.target.value;
+                fetchEvents();
+            });
+            
+            // Initial load and auto-refresh
+            fetchEvents();
+            setInterval(fetchEvents, 10000);
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 @app.get("/viewer", response_class=HTMLResponse)
 async def viewer(kid: str = "fastage-k1"):

@@ -3,9 +3,12 @@ import logging
 import time
 import base64
 import hashlib
+import hmac
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -23,6 +26,10 @@ logger = logging.getLogger(__name__)
 # Constants / config
 GUEST_LIST_BASE = os.getenv("PAVE_GUEST_LIST_BASE", "http://localhost:8002")
 TIMEOUT = 5.0
+
+# Events log config
+EVENTS_HMAC_SECRET = os.getenv("EVENTS_HMAC_SECRET", "dev-events-secret")
+EVENTS_INGEST_TOKEN = os.getenv("EVENTS_INGEST_TOKEN")
 
 ALLOWED_WALLET_ORIGIN = os.getenv("PAVE_WALLET_ORIGIN", "http://localhost:8000")
 ALLOWED_AUDIENCES = {
@@ -189,6 +196,84 @@ async def verify_log_head_signature(head: Dict[str,str]) -> bool:
         return True
     except InvalidSignature:
         return False
+
+def compute_aud_hash(aud: str) -> str:
+    """Compute aud_hash using HMAC-SHA256 with canonical aud.
+    
+    Canonicalization rule: scheme://host[:port] lowercased, preserving explicit ports.
+    - https://example.com → https://example.com
+    - https://EXAMPLE.COM:443 → https://example.com:443  
+    - http://localhost:9001 → http://localhost:9001
+    
+    Default ports (80/443) are NOT stripped - we preserve whatever was in the original aud.
+    """
+    parsed = urlparse(aud)
+    canonical_aud = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+    return hmac.new(
+        EVENTS_HMAC_SECRET.encode('utf-8'), 
+        canonical_aud.encode('utf-8'), 
+        hashlib.sha256
+    ).hexdigest()
+
+async def emit_event(result: VerifyResponse, envelope: Optional[Any], payload: Optional[Dict[str, Any]]):
+    """Emit verification event to events log (fail-open with single retry)"""
+    if not envelope:
+        return  # Can't emit without envelope
+    
+    # Extract event data
+    aud_hash = compute_aud_hash(envelope.aud)
+    issuer = payload.get('iss') if payload else 'unknown'
+    attested_issuer = None  # Could extract from issuer entry if needed
+    method = payload.get('method') if payload else 'unknown'
+    policy_tag = payload.get('policy_tag') if payload else 'unknown'
+    outcome = 'ok' if result.ok else 'fail'
+    reason = result.reason if not result.ok else None
+    issuer_key_kid = payload.get('kid') if payload else None
+    
+    # Build event
+    event_data = {
+        "schema": "events.v1",
+        "ts": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+        "aud_hash": aud_hash,
+        "issuer": issuer,
+        "attested_issuer": attested_issuer,
+        "method": method,
+        "policy_tag": policy_tag,
+        "outcome": outcome,
+        "reason": reason,
+        "verify_id": None,  # Could add unique verify ID if needed
+        "issuer_key_kid": issuer_key_kid
+    }
+    
+    # Remove None values
+    event_data = {k: v for k, v in event_data.items() if v is not None}
+    
+    # Headers for request
+    headers = {"Content-Type": "application/json"}
+    if EVENTS_INGEST_TOKEN:
+        headers["X-Events-Auth"] = EVENTS_INGEST_TOKEN
+    
+    # Attempt with single retry (fail-open)
+    for attempt in range(2):  # 0 and 1
+        try:
+            response = await http_client.post(
+                f"{GUEST_LIST_BASE}/log/events",
+                json=event_data,
+                headers=headers,
+                timeout=0.1 if attempt == 1 else 2.0  # 100ms timeout on retry
+            )
+            
+            if response.status_code in (200, 201):
+                return  # Success!
+            else:
+                logger.warning(f"Events log returned {response.status_code} on attempt {attempt + 1}")
+                
+        except Exception as e:
+            logger.warning(f"Failed to emit event (attempt {attempt + 1}): {e}")
+            
+        # If this was the retry, give up
+        if attempt == 1:
+            break
 
 async def verify_receipt(receipt_jwt: str, policy_id: str = "uk_adult_high") -> VerifyResponse:
     """Main verification logic"""
@@ -726,6 +811,18 @@ async def verify_envelope_endpoint(req: Request, request: VerifyEnvelopeRequest)
         
         # 4. Verify the receipt
         result = await verify_receipt(envelope.receipt, request.policy_id)
+        
+        # 5. Emit event to transparency log (fail-open)
+        try:
+            # Parse payload for event data
+            payload = None
+            try:
+                _, payload = parse_jwt_header_payload(envelope.receipt)
+            except:
+                pass  # Continue without payload if parsing fails
+            await emit_event(result, envelope, payload)
+        except Exception as e:
+            logger.warning(f"Failed to emit event: {e}")
         
         logger.info(json.dumps({
             "event": "verifier.envelope.processed",
